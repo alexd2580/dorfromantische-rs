@@ -168,6 +168,9 @@ class State:
     quests_fulfilled: int
     quests_failed: int
 
+    s_offset: int
+    t_offset: int
+
     preplaced_tiles: list[PreplacedTile]
     tile_stack: list[Tile]
     tiles: list[Tile]
@@ -178,6 +181,18 @@ class State:
 
         tiles = [Tile(0, 0, 0, [], SpecialTile(0), None)]
         tiles.extend([Tile.from_dump(tile) for tile in data["tiles"] if tile is not None])
+
+        # IN THEORY, the indices could start off from 0, 0.
+        s_offset = tiles[0].s
+        t_offset = tiles[0].t
+
+        for tile in tiles:
+            s_offset = min(s_offset, tile.s)
+            t_offset = min(t_offset, tile.t)
+
+        for tile in tiles:
+            tile.s -= s_offset
+            tile.t -= t_offset
 
         return State(
             data["fileName"],
@@ -190,6 +205,8 @@ class State:
             data["perfectPlacements"],
             data["questsFulfilled"],
             data["questsFailed"],
+            s_offset,
+            t_offset,
             [PreplacedTile.from_dump(tile) for tile in data["preplacedTiles"] if tile is not None],
             [Tile.from_dump(tile) for tile in data["tileStack"] if tile is not None],
             tiles,

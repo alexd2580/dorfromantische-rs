@@ -3,7 +3,7 @@
 import sys
 from dorfromantischer.savegame import parse_savegame
 from dorfromantischer.state import State, Form, Terrain
-from dorfromantischer.chunks import Chunks
+from dorfromantischer.quadtree import Quadtree, Pos
 from dorfromantischer.game3d import Game3D
 from dorfromantischer.gl.program import Program
 from dorfromantischer.gl.buffer import Buffer, UniformBuffer, ShaderStorageBuffer
@@ -12,17 +12,41 @@ import math
 from OpenGL import GL
 import numpy
 from scipy.spatial.transform import Rotation
-from typing import Optional
 
 
 def normalize(vector: numpy.ndarray):
     return vector / numpy.linalg.norm(vector)
 
 
+# Byte sizes.
+int_ = 4
+float_ = 4
+vec3_ = (3 + 1) * float_
+
+
+form_mapping = {
+    Form.size1: [0],
+    Form.size2: [0, 1],
+    Form.bridge: [0, 2],
+    Form.straight: [0, 3],
+    Form.size3: [0, 1, 2],
+    Form.junction_left: [0, 1, 3],
+    Form.junction_right: [0, 1, 4],
+    Form.three_way: [0, 2, 4],
+    Form.size4: [0, 1, 2, 3],
+    Form.fan_out: [0, 1, 2, 4],
+    Form.x: [0, 1, 3, 4],
+    Form.size5: [0, 1, 2, 3, 4],
+    Form.size6: [0, 1, 2, 3, 4, 5],
+    Form.unknown_102: [],
+    Form.unknown_105: [],
+    Form.water_size4: [0, 1, 2, 3],
+    Form.unknown_111: [],
+}
 
 class Dorfromantik(Game3D):
     state: State
-    chunks: Chunks
+    quadtree: Quadtree
 
     mouse_locked: bool
 
@@ -38,63 +62,51 @@ class Dorfromantik(Game3D):
 
     globals_buffer: Buffer
     view_buffer: Buffer
-    chunk_meta_buffer: Buffer
     tiles_buffer: Buffer
-    chunk_headers_buffer: Buffer
-    chunk_indices_buffer: Buffer
+    quadtree_buffer: Buffer
 
     def __init__(self):
         super().__init__()
 
-        self.shader = Program("shaders/vertex.glsl", "shaders/fragment.glsl")
+        self.shader = Program("shaders/shader.vert", "shaders/shader.frag")
 
     def create_buffers(self):
         self.log("Create buffers")
         state = self.state
         tiles = state.tiles
-        chunks = self.chunks
+        quadtree = self.quadtree
 
         # Globals buffer
-        globals_bytes = 4
+        globals_bytes = 1 * float_
         self.globals_buffer = UniformBuffer(globals_bytes, "globals_buffer")
 
         # View buffer
-        view_bytes = 2 * 4 + 4 * 4 + 4 + 4 + 4 * (3 + 1) * 4
+        view_bytes = 2 * int_ + 2 * float_ + 4 * vec3_
         self.view_buffer = UniformBuffer(view_bytes, "view_buffer")
-        # Chunk meta buffer
-        chunk_meta_bytes = 4 * 4
-        self.chunk_meta_buffer = UniformBuffer(chunk_meta_bytes, "chunk_meta_buffer")
 
         # Tiles buffer
-        num_tile_4bytes = 2 + 6
-        tile_bytes = num_tile_4bytes * 4
+        tile_bytes = 2 * int_ + 6 * int_
         tiles_bytes = len(tiles) * tile_bytes
         self.tiles_buffer = ShaderStorageBuffer(tiles_bytes, "tiles_buffer")
 
-        # Chunk headers buffer
-        chunk_header_bytes = 2 * 4
-        chunk_headers_bytes = len(chunks.headers) * chunk_header_bytes
-        self.chunk_headers_buffer = ShaderStorageBuffer(chunk_headers_bytes, "chunk_headers_buffer")
-
-        # Chunk indices buffer
-        chunk_index_bytes = 4
-        chunk_indices_bytes = len(chunks.headers) * chunks.chunk_size * chunks.chunk_size * chunk_index_bytes
-        self.chunk_indices_buffer = ShaderStorageBuffer(chunk_indices_bytes, "chunk_indices_buffer")
+        # Quadtree buffer
+        quadtree_node_bytes = 4 * int_
+        quadtree_bytes = (3 + 1) * int_ + len(quadtree.nodes) * quadtree_node_bytes
+        self.quadtree_buffer = ShaderStorageBuffer(quadtree_bytes, "quadtree_buffer")
 
     def initialize_buffers(self):
         self.log("Initialize buffers")
         state = self.state
         tiles = state.tiles
-        chunks = self.chunks
+        quadtree = self.quadtree
 
+        # View data
         view_data = numpy.array([self.WIDTH, self.HEIGHT], dtype=numpy.int32)
         self.view_buffer.write(view_data)
+        view_data = numpy.array([math.pi / 2, 0], dtype=numpy.float32)
+        self.view_buffer.write(view_data, offset=2 * int_)
 
-
-        chunk_size = chunks.chunk_size
-        chunk_meta_data = numpy.array([chunk_size, chunk_size * chunk_size, chunks.num_chunk_levels, chunks.num_level0_chunks], dtype=numpy.int32)
-        self.chunk_meta_buffer.write(chunk_meta_data)
-
+        # Tiles data
         terrains = set()
         forms = set()
         special = set()
@@ -102,104 +114,35 @@ class Dorfromantik(Game3D):
         def rotation(rot):
             return rot % 6
 
-        tiles_data = numpy.zeros((2 + 6) * len(tiles), dtype=numpy.int32)
+        tiles_data = numpy.zeros(shape=(len(tiles), 2 + 6), dtype=numpy.int32)
         for index, tile in enumerate(tiles):
             segments = [Terrain.empty.value] * 6
 
             for segment in tile.segments:
                 rot = rotation(tile.rotation + segment.rotation)
                 terrain = segment.terrain.value
-                match segment.form:
-                    case Form.size1:
-                        segments[rotation(rot + 0)] = terrain
-                    case Form.size2:
-                        segments[rotation(rot + 0)] = terrain
-                        segments[rotation(rot + 1)] = terrain
-                    case Form.bridge:
-                        segments[rotation(rot + 0)] = terrain
-                        segments[rotation(rot + 2)] = terrain
-                    case Form.straight:
-                        segments[rotation(rot + 0)] = terrain
-                        segments[rotation(rot + 3)] = terrain
-                    case Form.size3:
-                        segments[rotation(rot + 0)] = terrain
-                        segments[rotation(rot + 1)] = terrain
-                        segments[rotation(rot + 2)] = terrain
-                    case Form.junction_left:
-                        segments[rotation(rot + 0)] = terrain
-                        segments[rotation(rot + 1)] = terrain
-                        segments[rotation(rot + 3)] = terrain
-                    case Form.junction_right:
-                        segments[rotation(rot + 0)] = terrain
-                        segments[rotation(rot + 1)] = terrain
-                        segments[rotation(rot + 4)] = terrain
-                    case Form.three_way:
-                        segments[rotation(rot + 0)] = terrain
-                        segments[rotation(rot + 2)] = terrain
-                        segments[rotation(rot + 4)] = terrain
-                    case Form.size4:
-                        segments[rotation(rot + 0)] = terrain
-                        segments[rotation(rot + 1)] = terrain
-                        segments[rotation(rot + 2)] = terrain
-                        segments[rotation(rot + 3)] = terrain
-                    case Form.fan_out:
-                        segments[rotation(rot + 0)] = terrain
-                        segments[rotation(rot + 1)] = terrain
-                        segments[rotation(rot + 2)] = terrain
-                        segments[rotation(rot + 4)] = terrain
-                    case Form.x:
-                        segments[rotation(rot + 0)] = terrain
-                        segments[rotation(rot + 1)] = terrain
-                        segments[rotation(rot + 3)] = terrain
-                        segments[rotation(rot + 4)] = terrain
-                    case Form.size5:
-                        segments[rotation(rot + 0)] = terrain
-                        segments[rotation(rot + 1)] = terrain
-                        segments[rotation(rot + 2)] = terrain
-                        segments[rotation(rot + 3)] = terrain
-                        segments[rotation(rot + 4)] = terrain
-                    case Form.size6:
-                        segments[rotation(rot + 0)] = terrain
-                        segments[rotation(rot + 1)] = terrain
-                        segments[rotation(rot + 2)] = terrain
-                        segments[rotation(rot + 3)] = terrain
-                        segments[rotation(rot + 4)] = terrain
-                        segments[rotation(rot + 5)] = terrain
-                    case Form.unknown_102:
-                        pass
-                    case Form.unknown_105:
-                        pass
-                    case Form.water_size4:
-                        segments[rotation(rot + 0)] = terrain
-                        segments[rotation(rot + 1)] = terrain
-                        segments[rotation(rot + 2)] = terrain
-                        segments[rotation(rot + 3)] = terrain
-                    case Form.unknown_111:
-                        pass
+
+                for index in form_mapping[segment.form]:
+                    segments[rotation(rot + index)] = terrain
 
                 terrains.add(segment.terrain)
                 forms.add(segment.form)
 
             special.add(tile.special_tile.id)
 
-            num_tile_4bytes = 2 + 6
-            base_index = num_tile_4bytes * index
-            tiles_data[base_index] = tile.s
-            tiles_data[base_index + 1] = tile.t
-            for i, s in enumerate(segments):
-                tiles_data[base_index + 2 + i] = s
-
-        self.tiles_buffer.write(tiles_data)
+            tiles_data[index] = [tile.s, tile.t, *segments]
 
         self.log(f"Terrains: {terrains}")
         self.log(f"Forms {forms}")
         self.log(f"Special {special}")
 
-        chunk_headers_data = numpy.array(chunks.headers, dtype=numpy.int32)
-        self.chunk_headers_buffer.write(chunk_headers_data)
+        self.tiles_buffer.write(tiles_data)
 
-        chunk_indices_data = numpy.array(chunks.indices, dtype=numpy.int32)
-        self.chunk_indices_buffer.write(chunk_indices_data)
+        # Quadtree data
+        quadtree_data = numpy.array([quadtree.root_s, quadtree.root_t, quadtree.root_width], dtype=numpy.int32)
+        self.quadtree_buffer.write(quadtree_data)
+        quadtree_data = numpy.array(quadtree.nodes, dtype=numpy.int32)
+        self.quadtree_buffer.write(quadtree_data, offset =(3 + 1) * int_)
 
     def rebind_buffers(self):
         self.log("Rebinding")
@@ -210,10 +153,8 @@ class Dorfromantik(Game3D):
 
         self.globals_buffer.rebind(program)
         self.view_buffer.rebind(program)
-        self.chunk_meta_buffer.rebind(program)
         self.tiles_buffer.rebind(program)
-        self.chunk_headers_buffer.rebind(program)
-        self.chunk_indices_buffer.rebind(program)
+        self.quadtree_buffer.rebind(program)
 
     def set_yaw_pitch(self, yaw, pitch):
         self.yaw = yaw
@@ -254,9 +195,9 @@ class Dorfromantik(Game3D):
         pygame.mouse.set_visible(not lock)
         pygame.event.set_grab(lock)
 
-    def set_data(self, state: State, chunks: Chunks):
+    def set_data(self, state: State, quadtree: Quadtree):
         self.state = state
-        self.chunks = chunks
+        self.quadtree = quadtree
 
         self.create_buffers()
         self.rebind_buffers()
@@ -268,14 +209,18 @@ class Dorfromantik(Game3D):
         self.globals_buffer.write(globals_data)
 
     def write_view_buffer(self):
-        fovy = math.pi / 2
-        view_data = numpy.array([fovy, 0, *self.origin, 0, *self.right, 0, *self.ahead, 0, *self.up, 0], dtype=numpy.float32)
-        self.view_buffer.write(view_data, offset=2 * 4)
+        view_data = numpy.array([*self.origin, 0, *self.right, 0, *self.ahead, 0, *self.up, 0], dtype=numpy.float32)
+        self.view_buffer.write(view_data, offset=2 * int_ + 2 * float_)
 
     def reset(self):
-        self.origin = numpy.array([100.0, 0.0, 100.0])
+        # self.origin = numpy.array([100.0, 0.0, 100.0])
+        # self.set_yaw_pitch(7 * math.pi / 8, 0)
+
+        # self.origin = numpy.array([0.0, 100.0, 0.0])
         # self.set_yaw_pitch(0, -math.pi / 2)
-        self.set_yaw_pitch(7 * math.pi / 8, 0)
+
+        self.origin = numpy.array([0.0, 5.0, 0.0])
+        self.set_yaw_pitch(- math.pi / 4, 0)
 
         self.lock_mouse(False)
 
@@ -313,11 +258,11 @@ if __name__ == "__main__":
     print("Interpreting data")
     state = State.from_dump(data)
 
-    print("Building chunks")
-    tile_items = [(index, tile.s, tile.t) for index, tile in enumerate(state.tiles)]
-    chunks = Chunks(tile_items, chunk_size=4)
+    print("Building quadtree")
+    tile_items = [(Pos(tile.s, tile.t), index)  for index, tile in enumerate(state.tiles)]
+    quadtree = Quadtree(tile_items)
 
     print("Running game")
-    game.set_data(state, chunks)
+    game.set_data(state, quadtree)
     game.reset()
     game.run()

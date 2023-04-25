@@ -8,8 +8,7 @@ layout (std140) uniform globals_buffer {
 };
 
 layout (std140) uniform view_buffer {
-    int width;
-    int height;
+    ivec2 size;
 
     float fovy;
     float _pad;
@@ -18,13 +17,6 @@ layout (std140) uniform view_buffer {
     vec3 camera_right;
     vec3 camera_ahead;
     vec3 camera_up;
-};
-
-layout (std140) uniform chunk_meta_buffer {
-    int chunk_size;
-    int num_chunk_items;
-    int num_chunk_levels;
-    int num_level0_chunks;
 };
 
 struct Tile {
@@ -44,17 +36,11 @@ layout(std430) buffer tiles_buffer {
     Tile tiles[];
 };
 
-struct ChunkHeader {
-    int s;
-    int t;
-};
-
-layout(std430) buffer chunk_headers_buffer {
-    ChunkHeader chunk_headers[];
-};
-
-layout(std430) buffer chunk_indices_buffer {
-    int chunk_indices[];
+layout (std430) buffer quadtree_buffer {
+    ivec2 qt_root_pos;
+    int qt_root_width;
+    int qt_pad;
+    int[4] qt_nodes[];
 };
 
 struct Ray {
@@ -132,7 +118,7 @@ bool intersects_parallelogram(Ray ray, vec3 a, vec3 b, vec3 c) {
     return true;
 }
 
-float distance_to_aabb(Ray ray, vec3 lower, vec3 upper) {
+vec2 distance_to_aabb(Ray ray, vec3 lower, vec3 upper) {
     float tx1 = (lower.x - ray.origin.x) * ray.inv_dir.x;
     float tx2 = (upper.x - ray.origin.x) * ray.inv_dir.x;
     // Max intersection with all 3 lower planes.
@@ -150,7 +136,14 @@ float distance_to_aabb(Ray ray, vec3 lower, vec3 upper) {
     tmin = max(tmin, min(tz1, tz2));
     tmax = min(tmax, max(tz1, tz2));
 
-    return tmin <= tmax && tmax > 0 ? max(tmin, 0) : 1.0 / 0.0;
+    return vec2(tmin, tmax);
+}
+
+float distance_to_x(Ray ray, float target_x) {
+    return (target_x - ray.origin.x) * ray.inv_dir.x;
+}
+float distance_to_z(Ray ray, float target_z) {
+    return (target_z - ray.origin.z) * ray.inv_dir.z;
 }
 
 // https://www.scratchapixel.com/lessons/3d-basic-rendering/minimal-ray-tracer-rendering-simple-shapes/ray-plane-and-ray-disk-intersection.html
@@ -164,8 +157,8 @@ float distance_to_plane(vec3 plane, vec3 plane_normal, Ray ray) {
     return dot(ray_to_plane, plane_normal) / dot_dir_normal;
 }
 
-bool intersects_aligned_hex(Ray ray, int s, int t) {
-    vec3 lower = syt_to_xyz(s, 0, t);
+bool intersects_aligned_hex(Ray ray, ivec2 pos) {
+    vec3 lower = syt_to_xyz(pos.s, 0, pos.t);
     Ray rel_ray = Ray(ray.origin - lower, ray.dir, ray.inv_dir);
 
     float t1, t2;
@@ -504,8 +497,9 @@ Intersection intersect_water(Ray ray) {
     return no_intersection;
 }
 
-Intersection intersect_tile(Ray ray, int tile_index, Tile tile) {
-    if (!intersects_aligned_hex(ray, tile.s, tile.t)) {
+Intersection intersect_tile(Ray ray, int tile_index) {
+    Tile tile = tiles[tile_index];
+    if (!intersects_aligned_hex(ray, ivec2(tile.s, tile.t))) {
         return no_intersection;
     }
 
@@ -553,154 +547,147 @@ Intersection intersect_tile(Ray ray, int tile_index, Tile tile) {
                 closest_intersection.normal = rotate_z(closest_intersection.normal, 0.2 * sin(40 * hit_pos.z + 2 * time));
             }
         }
-
-        /* float center_offset = sqrt(dot(p, p)); */
-        /* float angle = acos(p.z / center_offset); */
-        /* bool below_z = p.x < 0; */
-        /* angle = below_z ? 2 * PI - angle : angle; */
-        /* // DR indexes clockwise from 1200. */
-        /* int rot = (7 - int(floor(angle * 3 / PI))) % 6; */
     }
 
     return closest_intersection;
-
-    /* // INACCURATE FOR PRECISE STUFF! */
-    /* float distance_bot = (0.0 - ray.origin.y) * ray.inv_dir.y; */
-    /* // TODO volume */
-    /* float distance_top = (0.0 - ray.origin.y) * ray.inv_dir.y; */
-    /* float distance = min(distance_bot, distance_top); */
-    /* if (distance < 0) { */
-    /*     return no_intersection; */
-    /* } */
-    /*  */
-    /* vec3 xoz_intersection = ray.origin + distance * ray.dir; */
-    /* vec3 tile_center = syt_to_xyz(tile.s, 0.0, tile.t); */
-    /* vec3 p = xoz_intersection - tile_center; */
-    /*  */
-    /* float x_offset = abs(p.x); */
-    /* float xz_offset = abs(p.z) + abs(p.x) / tile_d.x; */
-    /*  */
-    /* if (x_offset > 0.9 * 0.5 * tile_d.x || xz_offset > 0.9 * 1) { */
-    /*     return no_intersection; */
-    /* } */
-    /*  */
-    /* float center_offset = sqrt(dot(p, p)); */
-    /* float angle = acos(p.z / center_offset); */
-    /* bool below_z = p.x < 0; */
-    /* angle = below_z ? 2 * PI - angle : angle; */
-    /*  */
-    /* // We compute the index counterclockwise from 0300. */
-    /* // DR indexes clockwise from 1200. */
-    /* int rot = (7 - int(floor(angle * 3 / PI))) % 6; */
-    /*  */
-    /* int inner_terrain = tile.inner_segments[rot]; */
-    /* int outer_terrain = tile.outer_segments[rot]; */
-    /*  */
-    /* bool is_inner = x_offset < 0.45 * 0.5 * tile_d.x && xz_offset < 0.45 * 1; */
-    /* int terrain = is_inner && inner_terrain != -1 ? inner_terrain : outer_terrain; */
-    /* return Intersection(true, distance, terrain_color(terrain)); */
 }
 
-Intersection intersect_chunk_tiles(Ray ray, int chunk_index) {
-    Intersection closest_intersection = no_intersection;
-    Intersection tile_intersection;
+struct Vars {
+    int node_id;
+    ivec2 st;
+    int step_size;
+    int child_index;
 
-    int read_offset = chunk_index * num_chunk_items;
+    float near;
+    float far;
+};
 
-    // For every tile of this chunk...
-    for (int i = 0; i < num_chunk_items; i++) {
-        int tile_index = chunk_indices[read_offset + i];
-        if (tile_index == -1) {
-            continue;
-        }
-
-        tile_intersection = intersect_tile(ray, tile_index, tiles[tile_index]);
-        if (tile_intersection.distance < closest_intersection.distance) {
-            closest_intersection = tile_intersection;
-        }
-    }
-    return closest_intersection;
+// RETURNS Z in Y POSITION!!!
+vec2 st_to_xz(ivec2 st) {
+    return vec2(st.t * tile_d.x - 0.5 * (st.s % 2) * tile_d.x, st.s * tile_d.z);
 }
 
-// Look in the headers to check whether the ray intersects the aabb of this chunk.
-float distance_to_chunk(Ray ray, int chunk_index, int chunk_level) {
-    // Get min and max indices.
-    int s1 = chunk_headers[chunk_index].s, t1 = chunk_headers[chunk_index].t;
-
-    // Could be broken, off by one.
-    int chunk_width = int(pow(chunk_size, pow(2, num_chunk_levels - chunk_level - 1)));
-
-    int s2 = s1 + chunk_width - 1, t2 = t1 + chunk_width - 1;
-
-    // `tile_d` is slightly larger than needed.
-    vec3 lower = syt_to_xyz(s1, -1.0, t1) - tile_d;
-    vec3 upper = syt_to_xyz(s2, 1.0, t2) + tile_d;
-
-    return distance_to_aabb(ray, lower, upper);
-}
+const int leaf_bit = 1 << 31;
 
 Intersection intersect_scene(Ray ray) {
     Intersection closest_intersection = no_intersection;
-    float chunk_distance;
-    Intersection chunk_intersection;
+    Intersection tile_intersection;
 
-    int chunk_level = 0;
-    int chunk_level_indices_offset[8];
-    int chunk_level_read_pos[8];
+    int stack_depth = 0;
+    Vars stack[40];
 
-    // Read num_level0_chunks headers at pos 0. The initial loop is weird...
-    for (int level0_index = 0; level0_index < num_level0_chunks; level0_index++) {
-        if (isinf(distance_to_chunk(ray, level0_index, 0))) {
+    stack[0].node_id = 0;
+    stack[0].st = qt_root_pos;
+    stack[0].step_size = qt_root_width >> 1;
+    stack[0].child_index = 0;
+
+    ivec2 lower_st;
+    ivec2 upper_st = stack[0].st + ivec2(qt_root_width - 1);
+    vec3 lower = syt_to_xyz(stack[0].st.s, -1.0, stack[0].st.t) - tile_d;
+    vec3 upper = syt_to_xyz(upper_st.s, 1.0, upper_st.t) + tile_d;
+    vec2 aabb_dist = distance_to_aabb(ray, lower, upper);
+
+    stack[0].near = aabb_dist.x;
+    stack[0].far = aabb_dist.y;
+
+    float quad_near;
+    float quad_far;
+
+    vec3 color = vec3(0);
+
+    while(stack_depth >= 0) {
+        color += vec3(0.01);
+        // Test the specified child of the current node.
+        int parent_id = stack[stack_depth].node_id;
+
+        // Automatically post-increment the index.
+        // Primes the next child node to be checked.
+        int child_index = stack[stack_depth].child_index++;
+
+        // After checking all 4 children of a node move up a level.
+        if (child_index == 4) {
+            stack_depth--;
             continue;
         }
 
-        chunk_level = 1;
-        chunk_level_indices_offset[chunk_level] = level0_index * num_chunk_items;
-        chunk_level_read_pos[chunk_level] = 0;
-
-        // Return to for loop when level 0.
-        while(chunk_level > 0) {
-            // IF the current tile is off-chunk, move up.
-            int pos_within_chunk = chunk_level_read_pos[chunk_level];
-            if (pos_within_chunk == num_chunk_items) {
-                chunk_level--;
-                continue;
-            }
-
-            // Otherwise check this chunk POSITION WHICH IS NOT THE INDEX.
-            int chunk_pos = chunk_level_indices_offset[chunk_level] + pos_within_chunk;
-            // Now that we've read the chunk read pos (and are about to check
-            // it once), we can move the next ptr to the next item.
-            chunk_level_read_pos[chunk_level] += 1;
-
-            // Get the actual index and check it.
-            int chunk_index = chunk_indices[chunk_pos];
-            if (chunk_index == -1) {
-                continue;
-            }
-
-            chunk_distance = distance_to_chunk(ray, chunk_index, chunk_level);
-            if (isinf(chunk_distance) || chunk_distance > closest_intersection.distance) {
-                continue;
-            }
-
-            // Wenn es das letzte chunk level ist, dann kommen jetzt tile indices, andere funktion.
-            if (chunk_level == num_chunk_levels - 1) {
-                // No see if we got something closer than before.
-                chunk_intersection = intersect_chunk_tiles(ray, chunk_index);
-                if(chunk_intersection.distance < closest_intersection.distance) {
-                    closest_intersection = chunk_intersection;
-                }
-            } else {
-                chunk_level++;
-                chunk_level_indices_offset[chunk_level] = chunk_index * num_chunk_items;
-                chunk_level_read_pos[chunk_level] = 0;
-            }
-
-            // We've already moved the pointers further, no manual actions.
+        int child_id = qt_nodes[parent_id][child_index];
+        if (child_id == -1) {
+            // No branch here.
+            continue;
         }
+
+        // Entering the leaf checking here, without a prior AABB check for a single tile.
+        // TODO BENCHMARK!
+        // Check if the next node is a leaf, or another node.
+        if (bool(child_id & leaf_bit)) {
+            tile_intersection = intersect_tile(ray, child_id & ~leaf_bit);
+            if (tile_intersection.distance < closest_intersection.distance) {
+                closest_intersection = tile_intersection;
+            }
+            continue;
+        }
+
+        bool is_upper_xt = child_index > 1;
+        bool is_upper_zs = bool(child_index & 1);
+
+        // This is the lower bound (of the upper quadrant).
+        // Add (cos_30, 0, 1) if lower quadrant because lower quadrant has "further" upper bounds.
+        // Add (0, 0, 0.5) if upper quadrant.
+        ivec2 lower_end_st = stack[stack_depth].st + ivec2(stack[stack_depth].step_size - 1);
+        vec2 mid_point = st_to_xz(lower_end_st);
+        mid_point + vec2(is_upper_xt ? 0 : cos_30, is_upper_zs ? 0.5 : 1.0);
+
+        // Reset local bounds.
+        quad_near = stack[stack_depth].near;
+        quad_far = stack[stack_depth].far;
+
+        // X/T Direction.
+        float dist_x = distance_to_x(ray, mid_point.x);
+        if (is_upper_xt == ray.dir.x > 0) {
+            // Midpoint is near, offset near to max.
+            quad_near = max(quad_near, dist_x);
+        } else {
+            // Midpoint is far side, so far side comes closer.
+            quad_far = min(quad_far, dist_x);
+        }
+
+        // Z/S Direction.
+        float dist_z = distance_to_z(ray, mid_point.y); // Yes, y is correct here.
+        if (is_upper_zs == ray.dir.z > 0) {
+            quad_near = max(quad_near, dist_z);
+        } else {
+            quad_far = min(quad_far, dist_z);
+        }
+
+        // If the first point of entry of all halfspaces is post the first exit
+        // point, then there is no hit. If the earliest exit point is behind me
+        // -||-. If the current AABB near point is farther than the closest
+        // intersection, then there's no point in checking.
+        if (quad_near > closest_intersection.distance) {
+            continue;
+        }
+        if (quad_near > quad_far) {
+            continue;
+        }
+        if (quad_far < 0) {
+            continue;
+        }
+
+        stack_depth++;
+
+        if (stack_depth >= 11) {
+            return Intersection(0, vec3(1, 0, 1), vec3(0));
+        }
+
+        stack[stack_depth].node_id = child_id;
+        stack[stack_depth].st = stack[stack_depth - 1].st + stack[stack_depth - 1].step_size * ivec2(is_upper_zs, is_upper_xt);
+        stack[stack_depth].step_size = stack[stack_depth - 1].step_size / 2;
+        stack[stack_depth].child_index = 0;
+        stack[stack_depth].near = quad_near;
+        stack[stack_depth].far = quad_far;
     }
     // Nothign matches at all
+    /* closest_intersection.color = color; */
     return closest_intersection;
 }
 
@@ -713,7 +700,7 @@ Intersection intersect_scene(Ray ray) {
 // }
 
 void main(){
-    float aspect_ratio = float(width) / height;
+    float aspect_ratio = float(size.s) / size.t;
 
     vec3 ray_origin = camera_origin;
     float fov_factor = tan(0.5 * fovy);
@@ -722,6 +709,8 @@ void main(){
 
     Ray ray = Ray(ray_origin, ray_dir, 1 / ray_dir);
     Intersection intersection = intersect_scene(ray);
+    frag_color = vec4(intersection.color, 1);
+    return;
 
     vec3 ambient = 0.1 * intersection.color;
     vec3 light = vec3(0.577);
