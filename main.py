@@ -122,8 +122,8 @@ class Dorfromantik(Game3D):
                 rot = rotation(tile.rotation + segment.rotation)
                 terrain = segment.terrain.value
 
-                for index in form_mapping[segment.form]:
-                    segments[rotation(rot + index)] = terrain
+                for rot_index in form_mapping[segment.form]:
+                    segments[rotation(rot + rot_index)] = terrain
 
                 terrains.add(segment.terrain)
                 forms.add(segment.form)

@@ -157,9 +157,8 @@ float distance_to_plane(vec3 plane, vec3 plane_normal, Ray ray) {
     return dot(ray_to_plane, plane_normal) / dot_dir_normal;
 }
 
-bool intersects_aligned_hex(Ray ray, ivec2 pos) {
-    vec3 lower = syt_to_xyz(pos.s, 0, pos.t);
-    Ray rel_ray = Ray(ray.origin - lower, ray.dir, ray.inv_dir);
+bool intersects_aligned_hex(Ray ray, vec3 center) {
+    Ray rel_ray = Ray(ray.origin - center, ray.dir, ray.inv_dir);
 
     float t1, t2;
     float max_near = - 1.0 / 0.0;
@@ -499,11 +498,13 @@ Intersection intersect_water(Ray ray) {
 
 Intersection intersect_tile(Ray ray, int tile_index) {
     Tile tile = tiles[tile_index];
-    if (!intersects_aligned_hex(ray, ivec2(tile.s, tile.t))) {
+    vec3 tile_center = syt_to_xyz(tile.s, 0, tile.t);
+
+    if (!intersects_aligned_hex(ray, tile_center)) {
         return no_intersection;
     }
 
-    vec3 tile_center = syt_to_xyz(tile.s, 0, tile.t);
+    return Intersection(0, vec3(tile_center) / 100, vec3(0));
 
     // The ray intersects the hex BB.
     // Place all items into the scene and intersect with them.
@@ -574,7 +575,7 @@ Intersection intersect_scene(Ray ray) {
     Intersection tile_intersection;
 
     int stack_depth = 0;
-    Vars stack[40];
+    Vars stack[20];
 
     stack[0].node_id = 0;
     stack[0].st = qt_root_pos;
@@ -593,10 +594,7 @@ Intersection intersect_scene(Ray ray) {
     float quad_near;
     float quad_far;
 
-    vec3 color = vec3(0);
-
     while(stack_depth >= 0) {
-        color += vec3(0.01);
         // Test the specified child of the current node.
         int parent_id = stack[stack_depth].node_id;
 
@@ -686,18 +684,9 @@ Intersection intersect_scene(Ray ray) {
         stack[stack_depth].near = quad_near;
         stack[stack_depth].far = quad_far;
     }
-    // Nothign matches at all
-    /* closest_intersection.color = color; */
+
     return closest_intersection;
 }
-
-// vec3 origin_to_center = tile_pos - ray_origin;
-// float center_projection_onto_dir = dot(origin_to_center, ray_dir);
-// vec3 flat_hit_point = ray_origin + center_projection_onto_dir * ray_dir;
-// vec3 flat_hit_to_center = flat_hit_point - tile_pos;
-// if (dot(flat_hit_to_center, flat_hit_to_center) < 1) {
-//     return vec3(1, 0, 0);
-// }
 
 void main(){
     float aspect_ratio = float(size.s) / size.t;
@@ -720,7 +709,4 @@ void main(){
     vec3 lightness = ambient + diffuse + specular;
 
     frag_color = vec4(intersection.color * lightness, 1);
-
-    // frag_color = vec4(vec2(width / 1500.0, height / 1500.0), 0, 1);
-    // frag_color = vec4(ray_dir, 1);
 }

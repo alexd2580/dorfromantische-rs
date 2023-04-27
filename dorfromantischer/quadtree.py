@@ -24,7 +24,7 @@ class Quadtree:
             if not node:
                 node = [None] * 4
 
-            leaf_pos = 2 * int(s - node_s != 0) + int(t - node_t != 0)
+            leaf_pos = 2 * int(t > node_t) + int(s > node_s)
             node[leaf_pos] = leaf
             nodes[node_pos] = node
 
