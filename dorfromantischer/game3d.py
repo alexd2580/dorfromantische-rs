@@ -13,6 +13,8 @@ class Game3D:
 
     _fps = 60
 
+    avg_ms_per_frame: float
+
     def __init__(self):
         """Initialize a window."""
         pygame.init()
@@ -21,6 +23,9 @@ class Game3D:
         self.screen = pygame.display.set_mode(self.window_size, pygame.DOUBLEBUF|pygame.OPENGL|pygame.HWSURFACE)
         GL.glViewport(0, 0, self.WIDTH, self.HEIGHT)
         GL.glClearColor(0.2, 0, 0.2, 0)
+
+        GL.glEnable(GL.GL_BLEND)
+        GL.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA)
 
     def reset(self):
         """Override this to easily reset the game state from the main."""
@@ -50,8 +55,7 @@ class Game3D:
         self._running = True
         clock = pygame.time.Clock()
 
-        last_print = -1
-        avg_ms_per_frame = 1000 / self._fps
+        self.avg_ms_per_frame = 1000 / self._fps
 
         while self._running:
             for event in pygame.event.get():
@@ -69,13 +73,7 @@ class Game3D:
             pygame.display.flip()
 
             ms_per_frame = clock.tick(self._fps)
-            avg_ms_per_frame = 0.95 * avg_ms_per_frame + 0.05 * ms_per_frame
-
-            cur_time = self.current_time()
-            if cur_time > last_print + 3:
-                last_print = cur_time
-                self.log(f"FPS: {1000 / avg_ms_per_frame:.2f}")
-
+            self.avg_ms_per_frame = 0.95 * self.avg_ms_per_frame + 0.05 * ms_per_frame
 
 #
 #

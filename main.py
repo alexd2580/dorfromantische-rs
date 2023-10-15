@@ -3,7 +3,6 @@
 import sys
 from dorfromantischer.savegame import parse_savegame
 from dorfromantischer.state import State, Form, Terrain
-from dorfromantischer.quadtree import Quadtree, Pos
 from dorfromantischer.game3d import Game3D
 from dorfromantischer.gl.program import Program
 from dorfromantischer.gl.buffer import Buffer, UniformBuffer, ShaderStorageBuffer
@@ -19,34 +18,14 @@ def normalize(vector: numpy.ndarray):
 
 
 # Byte sizes.
+bool_ = 4
 int_ = 4
 float_ = 4
 vec3_ = (3 + 1) * float_
 
 
-form_mapping = {
-    Form.size1: [0],
-    Form.size2: [0, 1],
-    Form.bridge: [0, 2],
-    Form.straight: [0, 3],
-    Form.size3: [0, 1, 2],
-    Form.junction_left: [0, 1, 3],
-    Form.junction_right: [0, 1, 4],
-    Form.three_way: [0, 2, 4],
-    Form.size4: [0, 1, 2, 3],
-    Form.fan_out: [0, 1, 2, 4],
-    Form.x: [0, 1, 3, 4],
-    Form.size5: [0, 1, 2, 3, 4],
-    Form.size6: [0, 1, 2, 3, 4, 5],
-    Form.unknown_102: [],
-    Form.unknown_105: [],
-    Form.water_size4: [0, 1, 2, 3],
-    Form.unknown_111: [],
-}
-
 class Dorfromantik(Game3D):
     state: State
-    quadtree: Quadtree
 
     mouse_locked: bool
 
@@ -62,43 +41,44 @@ class Dorfromantik(Game3D):
 
     globals_buffer: Buffer
     view_buffer: Buffer
-    tiles_buffer: Buffer
-    quadtree_buffer: Buffer
+    quadrant_buffers: list[Buffer]
+
+    font: pygame.font.Font
+
+    fps: int
+    fps_surface: pygame.Surface
+    fps_data: bytes
 
     def __init__(self):
         super().__init__()
 
         self.shader = Program("shaders/shader.vert", "shaders/shader.frag")
+        self.font = pygame.font.SysFont('arial', 16)
+        self.fps = 0
 
     def create_buffers(self):
         self.log("Create buffers")
         state = self.state
-        tiles = state.tiles
-        quadtree = self.quadtree
 
-        # Globals buffer
-        globals_bytes = 1 * float_
+        # Globals buffer.
+        globals_bytes = 1 * float_ + 3 * float_ + 4 * int_
         self.globals_buffer = UniformBuffer(globals_bytes, "globals_buffer")
 
-        # View buffer
+        # View buffer.
         view_bytes = 2 * int_ + 2 * float_ + 4 * vec3_
         self.view_buffer = UniformBuffer(view_bytes, "view_buffer")
 
-        # Tiles buffer
-        tile_bytes = 2 * int_ + 6 * int_
-        tiles_bytes = len(tiles) * tile_bytes
-        self.tiles_buffer = ShaderStorageBuffer(tiles_bytes, "tiles_buffer")
-
-        # Quadtree buffer
-        quadtree_node_bytes = 4 * int_
-        quadtree_bytes = (3 + 1) * int_ + len(quadtree.nodes) * quadtree_node_bytes
-        self.quadtree_buffer = ShaderStorageBuffer(quadtree_bytes, "quadtree_buffer")
+        # Quadrant buffers.
+        tile_bytes = bool_ + int_ + 18 * int_ + 4 * int_
+        self.quadrant_buffers = [
+            ShaderStorageBuffer(tile_bytes * len(state.quadrants[q]), f"quadrant{q}_buffer")
+            for q in range(4)
+        ]
 
     def initialize_buffers(self):
         self.log("Initialize buffers")
         state = self.state
-        tiles = state.tiles
-        quadtree = self.quadtree
+        quadrants = state.quadrants
 
         # View data
         view_data = numpy.array([self.WIDTH, self.HEIGHT], dtype=numpy.int32)
@@ -106,55 +86,38 @@ class Dorfromantik(Game3D):
         view_data = numpy.array([math.pi / 2, 0], dtype=numpy.float32)
         self.view_buffer.write(view_data, offset=2 * int_)
 
-        # Tiles data
-        terrains = set()
-        forms = set()
-        special = set()
+        for q in range(4):
+            quadrant = quadrants[q]
+            tiles_data = numpy.zeros(shape=(len(quadrant), 1 + 1 + 18 + 4), dtype=numpy.int32)
 
-        def rotation(rot):
-            return rot % 6
+            for tile in quadrant:
+                segments = [0] * 18
+                if tile is None:
+                    continue
 
-        tiles_data = numpy.zeros(shape=(len(tiles), 2 + 6), dtype=numpy.int32)
-        for index, tile in enumerate(tiles):
-            segments = [Terrain.empty.value] * 6
+                for index, segment in enumerate(tile.segments):
+                    segments[3 * index + 0] = segment.form.value
+                    segments[3 * index + 1] = segment.terrain.value
+                    segments[3 * index + 2] = segment.rotation
 
-            for segment in tile.segments:
-                rot = rotation(tile.rotation + segment.rotation)
-                terrain = segment.terrain.value
+                for index in range(len(tile.segments), 6):
+                    segments[3 * index + 0] = 0
 
-                for rot_index in form_mapping[segment.form]:
-                    segments[rotation(rot + rot_index)] = terrain
+                tiles_data[tile.index] = [1, tile.special_tile.id, *segments, 0, 0, 0, 0]
 
-                terrains.add(segment.terrain)
-                forms.add(segment.form)
-
-            special.add(tile.special_tile.id)
-
-            tiles_data[index] = [tile.s, tile.t, *segments]
-
-        self.log(f"Terrains: {terrains}")
-        self.log(f"Forms {forms}")
-        self.log(f"Special {special}")
-
-        self.tiles_buffer.write(tiles_data)
-
-        # Quadtree data
-        quadtree_data = numpy.array([quadtree.root_s, quadtree.root_t, quadtree.root_width], dtype=numpy.int32)
-        self.quadtree_buffer.write(quadtree_data)
-        quadtree_data = numpy.array(quadtree.nodes, dtype=numpy.int32)
-        self.quadtree_buffer.write(quadtree_data, offset =(3 + 1) * int_)
+            self.quadrant_buffers[q].write(tiles_data)
 
     def rebind_buffers(self):
         self.log("Rebinding")
         program = self.shader
         if not program.program:
-            self.log("Invalid shader not rebinding buffers")
+            self.log("Invalid shader, not rebinding buffers")
             return
 
         self.globals_buffer.rebind(program)
         self.view_buffer.rebind(program)
-        self.tiles_buffer.rebind(program)
-        self.quadtree_buffer.rebind(program)
+        for q in range(4):
+            self.quadrant_buffers[q].rebind(program)
 
     def set_yaw_pitch(self, yaw, pitch):
         self.yaw = yaw
@@ -195,9 +158,8 @@ class Dorfromantik(Game3D):
         pygame.mouse.set_visible(not lock)
         pygame.event.set_grab(lock)
 
-    def set_data(self, state: State, quadtree: Quadtree):
+    def set_data(self, state: State):
         self.state = state
-        self.quadtree = quadtree
 
         self.create_buffers()
         self.rebind_buffers()
@@ -207,6 +169,8 @@ class Dorfromantik(Game3D):
     def write_globals_buffer(self):
         globals_data = numpy.array([self.current_time()], dtype=numpy.float32)
         self.globals_buffer.write(globals_data)
+        globals_data = numpy.array([len(self.state.quadrants[i]) for i in range(4)], dtype=numpy.int32)
+        self.globals_buffer.write(globals_data, offset=1 * float_ + 3 * int_)
 
     def write_view_buffer(self):
         view_data = numpy.array([*self.origin, 0, *self.right, 0, *self.ahead, 0, *self.up, 0], dtype=numpy.float32)
@@ -233,7 +197,7 @@ class Dorfromantik(Game3D):
         movement_sqr = numpy.dot(movement, movement)
         if movement_sqr > 0.5:
             movement = movement / math.sqrt(movement_sqr) * 0.1
-            factor = 2 if pressed[pygame.K_LSHIFT] else 1
+            factor = 10 if pressed[pygame.K_LSHIFT] else (0.1 if pressed[pygame.K_LCTRL] else 1)
 
             self.origin += factor * movement
 
@@ -245,7 +209,20 @@ class Dorfromantik(Game3D):
 
         self.write_globals_buffer()
         self.write_view_buffer()
+
+        if self.shader.program:
+            GL.glUseProgram(self.shader.program)
         GL.glDrawArrays(GL.GL_TRIANGLE_STRIP, 0, 4);
+        GL.glUseProgram(0)
+
+        fps = int(1000 / self.avg_ms_per_frame)
+        if fps != self.fps:
+            self.fps = fps
+            self.fps_surface = self.font.render(f"FPS: {self.fps}", True, (100, 100, 100, 255)).convert_alpha()
+            self.fps_data = pygame.image.tostring(self.fps_surface, "RGBA", True)
+
+        GL.glWindowPos2d(self.WIDTH - self.fps_surface.get_width(), self.HEIGHT - self.fps_surface.get_height())
+        GL.glDrawPixels(self.fps_surface.get_width(), self.fps_surface.get_height(), GL.GL_RGBA, GL.GL_UNSIGNED_BYTE, self.fps_data)
 
 
 if __name__ == "__main__":
@@ -257,12 +234,9 @@ if __name__ == "__main__":
 
     print("Interpreting data")
     state = State.from_dump(data)
-
-    print("Building quadtree")
-    tile_items = [(Pos(tile.s, tile.t), index)  for index, tile in enumerate(state.tiles)]
-    quadtree = Quadtree(tile_items)
+    state.assign_groups()
 
     print("Running game")
-    game.set_data(state, quadtree)
+    game.set_data(state)
     game.reset()
     game.run()

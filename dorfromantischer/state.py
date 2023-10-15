@@ -2,6 +2,7 @@ from enum import Enum
 from dataclasses import dataclass
 from typing import Optional
 import sys
+from collections import deque
 
 
 class Terrain(Enum):
@@ -45,20 +46,48 @@ class Form(Enum):
         assert data["__class"] == "Dorfromantik.SegmentTypeId"
         return Form(data["value__"])
 
+
+form_mapping = {
+    Form.size1: [0],
+    Form.size2: [0, 1],
+    Form.bridge: [0, 2],
+    Form.straight: [0, 3],
+    Form.size3: [0, 1, 2],
+    Form.junction_left: [0, 1, 3],
+    Form.junction_right: [0, 1, 4],
+    Form.three_way: [0, 2, 4],
+    Form.size4: [0, 1, 2, 3],
+    Form.fan_out: [0, 1, 2, 4],
+    Form.x: [0, 1, 3, 4],
+    Form.size5: [0, 1, 2, 3, 4],
+    Form.size6: [0, 1, 2, 3, 4, 5],
+    Form.unknown_102: [],
+    Form.unknown_105: [],
+    Form.water_size4: [0, 1, 2, 3],
+    Form.unknown_111: [],
+}
+
+
 @dataclass
 class Segment:
     terrain: Terrain
     form: Form
     rotation: int
+    group: Optional[int]
 
     @staticmethod
-    def from_dump(data):
+    def from_dump(data, tile_rotation):
         assert data["__class"] == "SegmentData002"
         return Segment(
             Terrain.from_dump(data["groupType"]),
             Form.from_dump(data["segmentType"]),
-            data["rotation"]
+            (tile_rotation + data["rotation"]) % 6,
+            None
         )
+
+    def rotations(self) -> list[int]:
+        return [(self.rotation + r) % 6 for r in form_mapping[self.form]]
+
 
 @dataclass
 class SpecialTile:
@@ -114,7 +143,6 @@ class Tile:
     s: int
     t: int
 
-    rotation: int
     segments: list[Segment]
     special_tile: SpecialTile
 
@@ -126,14 +154,57 @@ class Tile:
         pos = data["gridPos"]
         segments = data["segments"]
         quest = data["questTileData"]
+        rotation = data["rotation"]
         return Tile(
             pos[0],
             pos[1],
-            data["rotation"],
-            [] if segments is None else [Segment.from_dump(segment) for segment in segments if segment is not None],
+            [] if segments is None else [Segment.from_dump(segment, rotation) for segment in segments if segment is not None],
             SpecialTile.from_dump(data["specialTileId"]),
             None if quest is None else Quest.from_dump(quest)
         )
+
+    @classmethod
+    def quadrant_of(cls, s: int, t: int) -> int:
+        return (0 if t >= 0 else 3) if s >= 0 else (1 if t >= 0 else 2)
+
+    @classmethod
+    def index_of(cls, s: int, t: int) -> int:
+        _s = s if s >= 0 else - 1 - s
+        _t = t if t >= 0 else - 1 - t
+        st = _s + _t
+        return int((st + 1) * st / 2) + _t
+
+    @property
+    def quadrant(self) -> int:
+        return self.quadrant_of(self.s, self.t)
+
+    @property
+    def index(self) -> int:
+        return self.index_of(self.s, self.t)
+
+    def neighbor_coordinates(self, rotation: int) -> tuple[int, int]:
+        if rotation == 0:
+            return self.s, self.t + 1
+        elif rotation == 3:
+            return self.s, self.t - 1
+
+        s_even = self.s % 2 == 0
+
+        if rotation == 1:
+            return self.s + 1, self.t + (1 if s_even else 0)
+        elif rotation == 2:
+            return self.s + 1, self.t - (0 if s_even else 1)
+        elif rotation == 4:
+            return self.s - 1, self.t - (0 if s_even else 1)
+        elif rotation == 5:
+            return self.s - 1, self.t + (1 if s_even else 0)
+
+        raise Exception(f"Unexpected rotation {rotation}")
+
+    def segment_at(self, rotation: int) -> Optional[Segment]:
+        for segment in self.segments:
+            if rotation in segment.rotations():
+                return segment
 
 
 @dataclass
@@ -168,31 +239,30 @@ class State:
     quests_fulfilled: int
     quests_failed: int
 
-    s_offset: int
-    t_offset: int
-
     preplaced_tiles: list[PreplacedTile]
     tile_stack: list[Tile]
+
     tiles: list[Tile]
+    quadrants: tuple[list[Tile], list[Tile], list[Tile], list[Tile]]
 
     @staticmethod
     def from_dump(data):
         assert data["__class"] == "SaveGameData_003"
 
-        tiles = [Tile(0, 0, 0, [], SpecialTile(0), None)]
+        tiles = [Tile(0, 0, [], SpecialTile(0), None)]
         tiles.extend([Tile.from_dump(tile) for tile in data["tiles"] if tile is not None])
+        preplaced_tiles = [PreplacedTile.from_dump(tile) for tile in data["preplacedTiles"] if tile is not None]
 
-        # IN THEORY, the indices could start off from 0, 0.
-        s_offset = tiles[0].s
-        t_offset = tiles[0].t
-
-        for tile in tiles:
-            s_offset = min(s_offset, tile.s)
-            t_offset = min(t_offset, tile.t)
+        quadrants = ([], [], [], [])
 
         for tile in tiles:
-            tile.s -= s_offset
-            tile.t -= t_offset
+            q_index = tile.quadrant
+            t_index = tile.index
+            quadrant = quadrants[q_index]
+            if len(quadrant) < t_index + 1:
+                quadrant.extend([None] * ((t_index + 1) - len(quadrant)))
+
+            quadrant[t_index] = tile
 
         return State(
             data["fileName"],
@@ -205,12 +275,79 @@ class State:
             data["perfectPlacements"],
             data["questsFulfilled"],
             data["questsFailed"],
-            s_offset,
-            t_offset,
-            [PreplacedTile.from_dump(tile) for tile in data["preplacedTiles"] if tile is not None],
+            preplaced_tiles,
             [Tile.from_dump(tile) for tile in data["tileStack"] if tile is not None],
             tiles,
+            quadrants,
         )
+
+    def tile_at(self, s: int, t: int) -> Optional[Tile]:
+        quadrant = self.quadrants[Tile.quadrant_of(s, t)]
+        index = Tile.index_of(s, t)
+
+        if index < len(quadrant):
+            return quadrant[index]
+
+    def assign_groups(self):
+        # Assign group ids.
+        groups = {}
+        next_group_index = 0
+        processed = set()
+        queue: deque[tuple[int, int]] = deque([(0, 0)])
+
+        while len(queue) != 0:
+            (s, t) = queue.popleft()
+            if not (tile := self.tile_at(s, t)):
+                continue
+
+            # For each segment, aka each separate part of a tile.
+            for segment_index, segment in enumerate(tile.segments):
+                if segment.group is not None:
+                    continue
+
+                # Collect neighbor group ids.
+                group_ids = set()
+                for rotation in segment.rotations():
+                    neighbor_st = tile.neighbor_coordinates(rotation)
+                    if not (neighbor := self.tile_at(*neighbor_st)):
+                        continue
+
+                    opposite_side = (rotation + 3) % 6
+                    if not (neighbor_segment := neighbor.segment_at(opposite_side)):
+                        continue
+
+                    if neighbor_segment.terrain == segment.terrain:
+                        group_ids.add(neighbor_segment.group)
+
+                    # Enqueue neighbors.
+                    if neighbor_st not in processed:
+                        queue.append(neighbor_st)
+
+                if None in group_ids:
+                    group_ids.remove(None)
+
+                # Create, assign and merge.
+                if len(group_ids) == 0:
+                    segment.group = next_group_index
+                    next_group_index += 1
+                    groups[segment.group] = set([(s, t, segment_index)])
+
+                if len(group_ids) == 1:
+                    segment.group = group_ids.pop()
+                    groups[segment.group].add((s, t, segment_index))
+
+                else:
+                    segment.group = min(group_ids)
+                    group_ids.remove(id)
+                    groups[segment.group].append((s, t, segment_index))
+
+                    for other_id in group_ids:
+                        for (other_s, other_t, other_index) in groups[other_id]:
+                            if other_tile := self.tile_at(other_s, other_t):
+                                other_tile.segments[other_index].group = segment.group
+                                groups[segment.group].append((other_s, other_t, other_index))
+
+                        del groups[other_id]
 
 
 if __name__ == "__main__":

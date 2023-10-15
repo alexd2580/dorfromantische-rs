@@ -518,11 +518,11 @@ def resolve_references(record, data):
     return record
 
 
-
 def pythonify(records):
     simplified = [simplify_record(record) for record in records]
     simple_records = dict(filter(lambda x: isinstance(x, tuple), simplified))
     return resolve_references(simple_records["root"], simple_records)
+
 
 def parse_savegame(args):
     classes = {}

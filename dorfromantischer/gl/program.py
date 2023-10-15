@@ -1,4 +1,3 @@
-import os
 import pathlib
 from OpenGL import GL
 from typing import Optional
@@ -77,13 +76,11 @@ class Program:
     def reinstall_if_valid(self) -> bool:
         if vertex_shader := self._compile_vertex_shader():
             if fragment_shader := self._compile_fragment_shader():
-                print(vertex_shader, fragment_shader)
                 if program := link_program([vertex_shader, fragment_shader]):
                     self.destroy()
                     self.vertex_shader = vertex_shader
                     self.fragment_shader = fragment_shader
                     self.program = program
-                    GL.glUseProgram(self.program)
                     return True
 
                 GL.glDeleteShader(fragment_shader)
@@ -93,7 +90,6 @@ class Program:
 
     def destroy(self):
         if self.program is not None:
-            GL.glUseProgram(0)
             GL.glDeleteProgram(self.program)
             self.program = None
         if self.fragment_shader is not None:
