@@ -81,6 +81,7 @@ class Program:
                     self.vertex_shader = vertex_shader
                     self.fragment_shader = fragment_shader
                     self.program = program
+
                     return True
 
                 GL.glDeleteShader(fragment_shader)

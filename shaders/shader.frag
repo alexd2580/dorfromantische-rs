@@ -1,7 +1,9 @@
 #version 450
 
 in vec2 uv;
-out vec4 frag_color;
+
+layout(location = 0) out vec4 frag_color;
+layout(location = 1) out float frag_depth;
 
 layout (std140) uniform globals_buffer {
     float time;
@@ -86,6 +88,8 @@ const Intersection no_intersection = Intersection(inf, vec3(0.0 / 0.0), vec3(0.0
 const float normal_eps = 0.004;
 const vec2 normal_h = vec2(normal_eps, 0);
 
+
+const int ray_march_steps = 50;
 const float ray_march_eps = 0.0001;
 
 #define normal_scene(pos_var, scene_sdf_function) normalize(vec3(   \
@@ -280,6 +284,15 @@ vec3 repeated_xz(vec3 pos, float step) {
     return vec3(xz.x, pos.y, xz.y);
 }
 
+#define repeated_xz_variate(pos_var, index_var, step_var, scene_sdf_func, result_var) \
+    vec3 index_var = round(pos_var / step_var); \
+    SdfHit result_var = SdfHit(inf, vec3(0)); \
+    for(int i = -1; i < 2; i++) { for(int j = -1; j < 2; j++) { \
+        vec3 local_index = index_var + vec3(i, 0, j); \
+        SdfHit temp = scene_sdf_func(pos_var - step_var * local_index, local_index); \
+        result_var = temp.distance < result_var.distance ? temp : result_var; \
+    }}
+
 SdfHit sdf_intersect(SdfHit a, SdfHit b) {
     return SdfHit(max(a.distance, b.distance), a.color);
 }
@@ -303,7 +316,7 @@ SdfHit sdf_box(vec3 pos, vec3 side_len) {
 SdfHit sdf_plane(vec3 pos, vec3 normal, float offset) {
     return SdfHit(
         dot(pos, normal) - offset,
-        vec3(1)
+        vec3(1, 0, 1)
     );
 }
 
@@ -336,17 +349,19 @@ SdfHit sdf_cone_y(vec3 pos, vec2 c) {
 }
 
 SdfHit sdf_base_tile(vec3 pos) {
-    SdfHit vertical = sdf_intersect(
-        SdfHit(pos.y - 0, vec3(1)),
-        SdfHit(-pos.y - 0.1, vec3(1))
-    );
-    SdfHit horizontal = sdf_intersect(
-        sdf_plane(pos, vec3(-sin_30, 0, cos_30), 0),
-        sdf_plane(pos, vec3(-sin_30, 0, -cos_30), 0)
-    );
-    SdfHit front = sdf_plane(pos, vec3(1, 0, 0), 0.95 * cos_30);
+    pos = vec3(abs(pos.x), pos.y, abs(pos.z));
 
-    return sdf_intersect(sdf_intersect(vertical, horizontal), front);
+    SdfHit vertical = sdf_intersect(
+        SdfHit(pos.y - 0, vec3(1, 0, 1)),
+        SdfHit(-pos.y - 0.1, vec3(1, 0, 1))
+    );
+    SdfHit front_tl = sdf_intersect(
+        sdf_plane(pos, vec3(sin_30, 0, cos_30), 0.95 * cos_30),
+        sdf_plane(pos, vec3(1, 0, 0), 0.95 * cos_30)
+    );
+    SdfHit res = sdf_intersect(vertical, front_tl);
+    res.color = vec3(0.2);
+    return res;
 }
 
 SdfHit sdf_roof(vec3 pos) {
@@ -369,22 +384,6 @@ SdfHit sdf_empty_tile(vec3 pos) {
     return tile_floor;
 }
 
-Intersection intersect_empty(Ray ray) {
-    int num_steps = 50;
-    float distance = 0;
-    for (int i = 0; i < num_steps; i++) {
-        SdfHit scene = sdf_empty_tile(ray.origin);
-
-        if (scene.distance < ray_march_eps) {
-            return Intersection(distance, scene.color, normal_scene(ray.origin, sdf_empty_tile));
-        }
-
-        distance += scene.distance;
-        ray.origin += scene.distance * ray.dir;
-    }
-    return no_intersection;
-}
-
 // 3 in height.
 // 2 in width
 SdfHit sdf_house(vec3 pos) {
@@ -396,36 +395,22 @@ SdfHit sdf_house(vec3 pos) {
     return sdf_union(base, roof);
 }
 
-SdfHit sdf_house_tile(vec3 pos) {
-    SdfHit tile_floor = sdf_base_tile(pos);
-    tile_floor.color = vec3(0.2);
-
+SdfHit sdf_town(vec3 pos) {
     float scale = 0.1;
     vec3 house_offset = vec3(0.5 * cos_30, 0, 0);
 
-    SdfHit house = sdf_house(at(pos, house_offset) / scale);
+    vec3 repeated_pos = repeated_xz(at(pos, house_offset) / scale, 5);
+    SdfHit house = sdf_house(repeated_pos);
     house.distance *= scale;
-
-    return sdf_union(tile_floor, house);
+    return house;
 }
 
-Intersection intersect_house(Ray ray) {
-    int num_steps = 50;
-    float distance = 0;
-    for (int i = 0; i < num_steps; i++) {
-        SdfHit scene = sdf_house_tile(ray.origin);
+SdfHit sdf_tree(vec3 pos, vec3 index) {
+    float scale = 1 + 0.2 * (abs(int(index.x) % 2) - 0.5) + 0.2 * (abs(int(index.z) % 2) - 0.5);
+    scale = 1 + 0.4 * cos(index.x);
+    pos /= scale;
+    // pos += 0.001 * sin(index);
 
-        if (scene.distance < ray_march_eps) {
-            return Intersection(distance, scene.color, normal_scene(ray.origin, sdf_house_tile));
-        }
-
-        distance += scene.distance;
-        ray.origin += scene.distance * ray.dir;
-    }
-    return no_intersection;
-}
-
-SdfHit sdf_tree(vec3 pos) {
     SdfHit trunk_cyl = sdf_cylinder_y(pos, 0.15);
     SdfHit trunk_min = sdf_plane(pos, vec3(0, -1, 0), 0);
     SdfHit trunk_max = sdf_plane(pos, vec3(0, 1, 0), 0.5);
@@ -437,74 +422,37 @@ SdfHit sdf_tree(vec3 pos) {
     SdfHit treetop = sdf_intersect(treetop_cone, treetop_min);
     treetop.color = vec3(0.30, 0.34, 0.17);
 
-    return sdf_union(trunk, treetop);
+    SdfHit result = sdf_union(trunk, treetop);
+    result.distance *= scale;
+
+    return result;
 }
 
-SdfHit sdf_forest_tile(vec3 pos) {
-    SdfHit tile_floor = sdf_base_tile(pos);
-    tile_floor.color = vec3(0.2);
-
+SdfHit sdf_forest(vec3 pos) {
     float scale = 0.2;
-    vec3 tree_offset = vec3(0.5 * cos_30, 0, 0);
+    pos /= scale;
 
-    vec3 repeated_pos = repeated_xz(at(pos, tree_offset) / scale, 1);
-    SdfHit tree = sdf_tree(repeated_pos);
+    repeated_xz_variate(pos, index, vec3(1, 0, 1), sdf_tree, tree)
+
     tree.distance *= scale;
+    return tree;
 
-    SdfHit horizontal = sdf_intersect(
-        sdf_plane(pos, vec3(-sin_30, 0, cos_30), 0),
-        sdf_plane(pos, vec3(-sin_30, 0, -cos_30), 0)
-    );
-    SdfHit front = sdf_plane(pos, vec3(1, 0, 0), 0.95 * cos_30);
-    SdfHit bounds = sdf_intersect(horizontal, front);
+    // SdfHit horizontal = sdf_intersect(
+    //     sdf_plane(pos, vec3(-sin_30, 0, cos_30), 0),
+    //     sdf_plane(pos, vec3(-sin_30, 0, -cos_30), 0)
+    // );
+    // SdfHit front = sdf_plane(pos, vec3(1, 0, 0), 0.95 * cos_30);
+    // SdfHit bounds = sdf_intersect(horizontal, front);
 
-    SdfHit bounded_forest = sdf_intersect(tree, bounds);
-
-    return sdf_union(tile_floor, bounded_forest);
-}
-
-Intersection intersect_forest(Ray ray) {
-    int num_steps = 50;
-    float distance = 0;
-    for (int i = 0; i < num_steps; i++) {
-        SdfHit scene = sdf_forest_tile(ray.origin);
-
-        if (scene.distance < ray_march_eps) {
-            return Intersection(distance, scene.color, normal_scene(ray.origin, sdf_forest_tile));
-        }
-
-        distance += scene.distance;
-        ray.origin += scene.distance * ray.dir;
-    }
-    return no_intersection;
+    // return sdf_intersect(tree, bounds);
 }
 
 SdfHit sdf_wheat_tile(vec3 pos) {
-    SdfHit tile_floor = sdf_base_tile(pos);
-    tile_floor.color = vec3(0.2);
-
     float scale = 0.8;
     SdfHit wheat = sdf_base_tile(at(pos, vec3(0.1 * cos_30, 0.1, 0)) / scale);
     wheat.color = vec3(0.89, 0.71, 0.5);
     wheat.distance *= scale;
-
-    return sdf_union(tile_floor, wheat);
-}
-
-Intersection intersect_wheat(Ray ray) {
-    int num_steps = 50;
-    float distance = 0;
-    for (int i = 0; i < num_steps; i++) {
-        SdfHit scene = sdf_wheat_tile(ray.origin);
-
-        if (scene.distance < ray_march_eps) {
-            return Intersection(distance, scene.color, normal_scene(ray.origin, sdf_wheat_tile));
-        }
-
-        distance += scene.distance;
-        ray.origin += scene.distance * ray.dir;
-    }
-    return no_intersection;
+    return wheat;
 }
 
 SdfHit sdf_rail_tile(vec3 origin) {
@@ -538,59 +486,18 @@ SdfHit sdf_rail_tile(vec3 origin) {
 
     // Undo scaling.
     bounded_rail.distance *= scale;
-
-    // Add floor.
-    SdfHit tile_floor = sdf_base_tile(origin);
-    tile_floor.color = vec3(0.2);
-    return sdf_union(tile_floor, bounded_rail);
-}
-
-Intersection intersect_rail(Ray ray) {
-    int num_steps = 50;
-    float distance = 0;
-    for (int i = 0; i < num_steps; i++) {
-        SdfHit scene = sdf_rail_tile(ray.origin);
-
-        if (scene.distance < ray_march_eps) {
-            return Intersection(distance, scene.color, normal_scene(ray.origin, sdf_rail_tile));
-        }
-
-        distance += scene.distance;
-        ray.origin += scene.distance * ray.dir;
-    }
-    return no_intersection;
+    return bounded_rail;
 }
 
 SdfHit sdf_water_tile(vec3 origin) {
+    // TODO
     SdfHit tile_floor = sdf_base_tile(origin);
     tile_floor.color = vec3(0, 0, 0.6);
 
     return tile_floor;
 }
 
-Intersection intersect_water(Ray ray) {
-    int num_steps = 50;
-    float distance = 0;
-    for (int i = 0; i < num_steps; i++) {
-        SdfHit scene = sdf_water_tile(ray.origin);
-
-        if (scene.distance < ray_march_eps) {
-            vec3 normal = normal_scene(ray.origin, sdf_water_tile);
-
-            // 0.2 = PI / 16
-            return Intersection(distance, scene.color, normal);
-        }
-
-        distance += scene.distance;
-        ray.origin += scene.distance * ray.dir;
-    }
-    return no_intersection;
-}
-
 SdfHit sdf_bahnhof_tile(vec3 pos) {
-    SdfHit tile_floor = sdf_base_tile(pos);
-    tile_floor.color = vec3(0.2);
-
     SdfHit building = sdf_sphere(pos, 1);
     building.color = vec3(0.2, 0.3, 0.5);
 
@@ -601,25 +508,8 @@ SdfHit sdf_bahnhof_tile(vec3 pos) {
     SdfHit front = sdf_plane(pos, vec3(1, 0, 0), 0.95 * cos_30);
     SdfHit bounds = sdf_intersect(horizontal, front);
 
-    return sdf_union(tile_floor, sdf_intersect(bounds, building));
+    return sdf_intersect(bounds, building);
 }
-
-Intersection intersect_bahnhof(Ray ray) {
-    int num_steps = 50;
-    float distance = 0;
-    for (int i = 0; i < num_steps; i++) {
-        SdfHit scene = sdf_bahnhof_tile(ray.origin);
-
-        if (scene.distance < ray_march_eps) {
-            return Intersection(distance, scene.color, normal_scene(ray.origin, sdf_bahnhof_tile));
-        }
-
-        distance += scene.distance;
-        ray.origin += scene.distance * ray.dir;
-    }
-    return no_intersection;
-}
-
 
 Tile get_tile(ivec2 st) {
     // TODO check indices!
@@ -642,64 +532,82 @@ Tile get_tile(ivec2 st) {
     return Tile(false, 0, int[18](0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0), int[4](0, 0, 0, 0));
 }
 
+SdfHit sdf_segment(vec3 global_pos, vec3 pos, int form, int terrain, int rotation) {
+    switch(terrain) {
+    case HOUSE_SEGMENT:
+        return sdf_town(global_pos);
+    case FOREST_SEGMENT:
+        return sdf_forest(global_pos);
+    case WHEAT_SEGMENT:
+        break;
+    case RAIL_SEGMENT:
+        break;
+    case WATER_SEGMENT:
+        break;
+    case EMPTY_SEGMENT:
+    default:
+        return SdfHit(inf, vec3(0));
+    }
+}
 
 Intersection intersect_tile(Ray ray, ivec2 st, Tile tile) {
     vec3 tile_center = syt_to_xyz(st.s, 0, st.t);
-
-    // if (!intersects_aligned_hex(ray, tile_center)) {
-    //     return no_intersection;
-    // }
-
-    // The ray intersects the hex BB.
-    // Place all items into the scene and intersect with them.
-    Intersection closest_intersection = Intersection(1.0 / 0.0, vec3(1.0, 0.0, 0.0), vec3(0));
-    Intersection object_intersection = closest_intersection;
-
-    for (int rot = 0; rot < 6; rot++) {
-        // Rotation is CCW, but the DR rotation is CW.
-        float rotation = -rot * 2 * deg_30;
-        Ray rotated_ray = Ray(
-            rotate_y(at(ray.origin, tile_center), rotation),
-            rotate_y(ray.dir, rotation),
-            rotate_y(ray.inv_dir, rotation)
-        );
-
-        int outer_terrain = tile.segments[rot];
-        if (tile.special_id == 1) {
-            object_intersection = intersect_bahnhof(rotated_ray);
-        } else {
-            // Place things according to the type of the segment.
-            // Compute the center position of each segment first.
-            if (outer_terrain == EMPTY_SEGMENT) {
-                object_intersection = intersect_empty(rotated_ray);
-            } else if (outer_terrain == HOUSE_SEGMENT) {
-                object_intersection = intersect_house(rotated_ray);
-            } else if(outer_terrain == FOREST_SEGMENT) {
-                object_intersection = intersect_forest(rotated_ray);
-            } else if(outer_terrain == WHEAT_SEGMENT) {
-                object_intersection = intersect_wheat(rotated_ray);
-            } else if(outer_terrain == RAIL_SEGMENT) {
-                object_intersection = intersect_rail(rotated_ray);
-            } else if(outer_terrain == WATER_SEGMENT) {
-                object_intersection = intersect_water(rotated_ray);
+    float distance = 0.0;
+    for (int i = 0; i < ray_march_steps; i++) {
+        vec3 relative_origin = at(ray.origin, tile_center);
+        SdfHit scene = sdf_base_tile(relative_origin);
+        for (int segment_index = 0; segment_index < 6; segment_index++) {
+            int s = 3 * segment_index;
+            if (tile.segments[s + 0] == 0) {
+                break;
+            }
+            SdfHit segment = sdf_segment(ray.origin, relative_origin, tile.segments[s + 0], tile.segments[s + 1], tile.segments[s + 2]);
+            scene = sdf_union(scene, segment);
+            if (scene.distance < ray_march_eps) {
+                return Intersection(distance, scene.color, vec3(0, 1, 0));
             }
         }
 
-        if (object_intersection.distance < closest_intersection.distance) {
-            closest_intersection = object_intersection;
-            closest_intersection.normal = rotate_y(closest_intersection.normal, -rotation);
-
-            // Add some waves to the water using normals.
-            if(outer_terrain == WATER_SEGMENT) {
-                vec3 hit_pos = ray.origin + closest_intersection.distance * ray.dir;
-                closest_intersection.normal = rotate_x(closest_intersection.normal, 0.2 * sin(40 * hit_pos.x + 2 * time));
-                closest_intersection.normal = rotate_z(closest_intersection.normal, 0.2 * sin(40 * hit_pos.z + 2 * time));
-            }
-        }
+        distance += scene.distance;
+        ray.origin += scene.distance * ray.dir;
     }
-
-    return closest_intersection;
+    return no_intersection;
 }
+
+// int outer_terrain = tile.segments[rot];
+// if (tile.special_id == 1) {
+//     object_intersection = intersect_bahnhof(rotated_ray);
+// } else {
+//     // Place things according to the type of the segment.
+//     // Compute the center position of each segment first.
+//     if (outer_terrain == EMPTY_SEGMENT) {
+//         object_intersection = intersect_empty(rotated_ray);
+//     } else if (outer_terrain == HOUSE_SEGMENT) {
+//         object_intersection = intersect_house(rotated_ray);
+//     } else if(outer_terrain == FOREST_SEGMENT) {
+//         object_intersection = intersect_forest(rotated_ray);
+//     } else if(outer_terrain == WHEAT_SEGMENT) {
+//         object_intersection = intersect_wheat(rotated_ray);
+//     } else if(outer_terrain == RAIL_SEGMENT) {
+//         object_intersection = intersect_rail(rotated_ray);
+//     } else if(outer_terrain == WATER_SEGMENT) {
+//         object_intersection = intersect_water(rotated_ray);
+//     }
+// }
+
+// // Rotation is CCW, but the DR rotation is CW.
+// float rotation = -rot * 2 * deg_30;
+// Ray rotated_ray = Ray(
+//     rotate_y(at(ray.origin, tile_center), rotation),
+//     rotate_y(ray.dir, rotation),
+//     rotate_y(ray.inv_dir, rotation)
+// );
+
+// if(outer_terrain == WATER_SEGMENT) {
+//     vec3 hit_pos = ray.origin + closest_intersection.distance * ray.dir;
+//     closest_intersection.normal = rotate_x(closest_intersection.normal, 0.2 * sin(40 * hit_pos.x + 2 * time));
+//     closest_intersection.normal = rotate_z(closest_intersection.normal, 0.2 * sin(40 * hit_pos.z + 2 * time));
+// }
 
 Intersection intersect_scene(Ray ray) {
     float dist_floor = distance_to_y(ray, 0.0);
@@ -762,13 +670,15 @@ void main(){
 
     Ray ray = Ray(ray_origin, ray_dir, 1 / ray_dir);
     Intersection intersection = intersect_scene(ray);
+    frag_color = vec4(intersection.color, 1);
+    frag_depth = 1.0;
 
-    vec3 ambient = 0.1 * intersection.color;
-    vec3 light = vec3(0.577);
-    vec3 diffuse = vec3(max(2.0 * dot(intersection.normal, light), 0.0));
-    vec3 half_light_view = normalize(light - ray.dir);
-    vec3 specular = vec3(max(1.0 * pow(dot(intersection.normal, half_light_view), 200.0), 0.0));
-    vec3 lightness = ambient + diffuse + specular;
+    // vec3 ambient = 0.1 * intersection.color;
+    // vec3 light = vec3(0.577);
+    // vec3 diffuse = vec3(max(2.0 * dot(intersection.normal, light), 0.0));
+    // vec3 half_light_view = normalize(light - ray.dir);
+    // vec3 specular = vec3(max(1.0 * pow(dot(intersection.normal, half_light_view), 200.0), 0.0));
+    // vec3 lightness = ambient + diffuse + specular;
 
-    frag_color = vec4(intersection.color * lightness, 1);
+    // frag_color = vec4(intersection.color * lightness, 1);
 }
