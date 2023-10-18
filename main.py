@@ -9,8 +9,10 @@ from dorfromantischer.gl.buffer import Buffer, UniformBuffer, ShaderStorageBuffe
 import pygame
 import math
 from OpenGL import GL
+import OpenGL.raw.GL.VERSION.GL_3_3 as RawGL
 import numpy
 from scipy.spatial.transform import Rotation
+from typing import cast, Optional
 
 
 def normalize(vector: numpy.ndarray):
@@ -22,6 +24,113 @@ bool_ = 4
 int_ = 4
 float_ = 4
 vec3_ = (3 + 1) * float_
+
+
+
+class Texture:
+    texture: GL.GLuint
+    bound_index: int
+
+    def __init__(self, w: int, h: int, num_components: GL.GLint, format: Optional[GL.GLint]=None):
+        self.texture = GL.glGenTextures(1)
+        GL.glBindTexture(GL.GL_TEXTURE_2D, self.texture)
+
+        GL.glTexImage2D(
+            GL.GL_TEXTURE_2D,
+            0,
+            num_components,
+            w,
+            h,
+            0,
+            num_components if format is None else format,
+            GL.GL_FLOAT,
+            None
+        )
+
+        GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_S, GL.GL_CLAMP_TO_EDGE)
+        GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_T, GL.GL_CLAMP_TO_EDGE)
+        GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MIN_FILTER, GL.GL_LINEAR)
+        GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MAG_FILTER, GL.GL_LINEAR)
+        GL.glBindTexture(GL.GL_TEXTURE_2D, 0)
+
+    def bind(self, bind_index: int):
+        self.bound_index = bind_index
+        GL.glActiveTexture(cast(GL.GLenum, GL.GL_TEXTURE0) + self.bound_index)
+        GL.glBindTexture(GL.GL_TEXTURE_2D, self.texture)
+
+    def unbind(self):
+        GL.glActiveTexture(cast(GL.GLenum, GL.GL_TEXTURE0) + self.bound_index)
+        GL.glBindTexture(GL.GL_TEXTURE_2D, 0)
+        self.bound_index = 0
+
+    def drop(self):
+        GL.glDeleteTextures([self.texture])
+
+
+class Framebuffer:
+    textures: list[Texture]
+    framebuffer: GL.GLuint
+
+    def __init__(self, textures: list[Texture]):
+        self.textures = textures
+        self.framebuffer = GL.glGenFramebuffers(1)
+        GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, self.framebuffer)
+
+        base_enum = cast(int, GL.GL_COLOR_ATTACHMENT0)
+        for index, texture in enumerate(textures):
+            GL.glFramebufferTexture2D(GL.GL_FRAMEBUFFER, base_enum + index, GL.GL_TEXTURE_2D, texture.texture, 0)
+        GL.glDrawBuffers([base_enum + i for i in range(len(textures))])
+
+        if GL.glCheckFramebufferStatus(GL.GL_FRAMEBUFFER) != GL.GL_FRAMEBUFFER_COMPLETE:
+            print("Something wrong with framebuffer...")
+
+        GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, 0)
+
+    def bind(self):
+        GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, self.framebuffer)
+
+    def unbind(self):
+        GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, 0)
+
+    def drop(self):
+        GL.glDeleteFramebuffers([self.framebuffer])
+
+
+class Sampler:
+    sampler: GL.GLuint
+
+    def __init__(self):
+        self.sampler = GL.glGenSamplers(1)
+        GL.glSamplerParameteri(self.sampler, GL.GL_TEXTURE_WRAP_S, GL.GL_REPEAT)
+        GL.glSamplerParameteri(self.sampler, GL.GL_TEXTURE_WRAP_T, GL.GL_REPEAT)
+        GL.glSamplerParameteri(self.sampler, GL.GL_TEXTURE_MAG_FILTER, GL.GL_LINEAR)
+        GL.glSamplerParameteri(self.sampler, GL.GL_TEXTURE_MIN_FILTER, GL.GL_LINEAR)
+
+    def bind(self, bind_index: int):
+        GL.glBindSampler(bind_index, self.sampler)
+
+    def drop(self):
+        GL.glDeleteSamplers([self.sampler])
+
+
+# class Timer:
+#     timer: GL.GLuint
+#
+#     def __init__(self):
+#         self.timer = GL.glGenQueries(1)[0];
+#
+#     def record(self):
+#         GL.glQueryCounter(self.timer, GL.GL_TIMESTAMP);
+#
+#     def get_timestamp(self):
+#         avail = False
+#         while not avail:
+#             avail = GL.glGetQueryObjectiv(self.timer, GL.GL_QUERY_RESULT_AVAILABLE)
+#             result = numpy.array([0], dtype=numpy.uint64)
+#             RawGL.glGetQueryObjectui64v(self.timer, GL.GL_QUERY_RESULT, result)
+#             print(result)
+#
+#     # printf("Time spent on the GPU: %f ms\n", (stopTime - startTime) / 1000000.0);
 
 
 class Dorfromantik(Game3D):
@@ -50,9 +159,10 @@ class Dorfromantik(Game3D):
     fps_surface: pygame.Surface
     fps_data: bytes
 
-    framebuffer: GL.GLuint
-    color: GL.GLuint
-    depth: GL.GLuint
+    framebuffer: Framebuffer
+    color: Texture
+    depth: Texture
+    sampler: Sampler
 
     def __init__(self):
         super().__init__()
@@ -62,58 +172,12 @@ class Dorfromantik(Game3D):
         self.font = pygame.font.SysFont('arial', 16)
         self.fps = 0
 
-        # Bind framebuffer.
-        self.framebuffer = GL.glGenFramebuffers(1)
-        GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, self.framebuffer)
+        self.color = Texture(self.WIDTH, self.HEIGHT, GL.GL_RGBA)
+        self.depth = Texture(self.WIDTH, self.HEIGHT, GL.GL_R32F, GL.GL_RED)
+        self.framebuffer = Framebuffer([self.color, self.depth])
+        self.sampler = Sampler()
 
-        # Color texture.
-        self.color = GL.glGenTextures(1)
-        GL.glBindTexture(GL.GL_TEXTURE_2D, self.color)
-        GL.glTexImage2D(
-            GL.GL_TEXTURE_2D,
-            0,
-            GL.GL_RGBA,
-            self.WIDTH,
-            self.HEIGHT,
-            0,
-            GL.GL_RGBA,
-            GL.GL_FLOAT,
-            None
-        )
-        GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MIN_FILTER, GL.GL_LINEAR)
-        GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MAG_FILTER, GL.GL_LINEAR)
-        GL.glBindTexture(GL.GL_TEXTURE_2D, 0)
-
-        GL.glFramebufferTexture2D(GL.GL_FRAMEBUFFER, GL.GL_COLOR_ATTACHMENT0, GL.GL_TEXTURE_2D, self.color, 0)
-
-        # Depth texture.
-        self.depth = GL.glGenTextures(1)
-        GL.glBindTexture(GL.GL_TEXTURE_2D, self.depth)
-        GL.glTexImage2D(
-            GL.GL_TEXTURE_2D,
-            0,
-            GL.GL_RED,
-            self.WIDTH,
-            self.HEIGHT,
-            0,
-            GL.GL_RED,
-            GL.GL_FLOAT,
-            None
-        )
-        GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MIN_FILTER, GL.GL_LINEAR)
-        GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MAG_FILTER, GL.GL_LINEAR)
-        GL.glBindTexture(GL.GL_TEXTURE_2D, 0)
-
-        GL.glFramebufferTexture2D(GL.GL_FRAMEBUFFER, GL.GL_COLOR_ATTACHMENT1, GL.GL_TEXTURE_2D, self.depth, 0)
-
-        GL.glDrawBuffers([GL.GL_COLOR_ATTACHMENT0, GL.GL_COLOR_ATTACHMENT1])
-
-        print(GL.glCheckFramebufferStatus(GL.GL_FRAMEBUFFER) == GL.GL_FRAMEBUFFER_COMPLETE)
-
-        # Unbind framebuffer.
-        GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, 0)
-
-        self.sampler = GL.glGenSamplers(1)
+        self.vao = GL.glGenVertexArrays(1)
 
     def create_buffers(self):
         self.log("Create buffers")
@@ -261,6 +325,7 @@ class Dorfromantik(Game3D):
             factor = 10 if pressed[pygame.K_LSHIFT] else (0.1 if pressed[pygame.K_LCTRL] else 1)
 
             self.origin += factor * movement
+            self.origin[1] = max(0.5, self.origin[1])
 
     def render(self):
         if self.shader.was_source_modified_since():
@@ -271,44 +336,39 @@ class Dorfromantik(Game3D):
         if self.lighting.was_source_modified_since():
             self.log("Recompiling lighting shader")
             if self.lighting.reinstall_if_valid():
-                GL.glUseProgram(self.lighting.program)
-                GL.glUniform1i(GL.glGetUniformLocation(self.lighting.program, "color"), 0)
-                GL.glUniform1i(GL.glGetUniformLocation(self.lighting.program, "depth"), 1)
-                GL.glUseProgram(0)
-
                 self.globals_buffer.rebind(self.lighting)
                 self.view_buffer.rebind(self.lighting)
 
         self.write_globals_buffer()
         self.write_view_buffer()
 
+        GL.glBindVertexArray(self.vao)
+
         # Run regular pass.
         if self.shader.program:
-            GL.glUseProgram(self.shader.program)
-        GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, self.framebuffer)
-        GL.glDrawArrays(GL.GL_TRIANGLE_STRIP, 0, 4)
-        GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, 0)
-        GL.glUseProgram(0)
-
-        # Bind actual textures to texture units.
-        GL.glActiveTexture(GL.GL_TEXTURE0)
-        GL.glBindTexture(GL.GL_TEXTURE_2D, self.color)
-        GL.glBindSampler(0, self.sampler)
-        GL.glActiveTexture(GL.GL_TEXTURE1)
-        GL.glBindTexture(GL.GL_TEXTURE_2D, self.depth)
-        GL.glBindSampler(1, self.sampler)
+            self.framebuffer.bind()
+            self.shader.use()
+            GL.glDrawArrays(GL.GL_TRIANGLE_STRIP, 0, 4)
+            self.shader.unuse()
+            self.framebuffer.unbind()
 
         # Run lighting pass.
         if self.lighting.program:
-            GL.glUseProgram(self.lighting.program)
-        GL.glDrawArrays(GL.GL_TRIANGLE_STRIP, 0, 4)
-        GL.glUseProgram(0)
+            # Bind actual textures to texture units.
+            self.color.bind(0)
+            self.sampler.bind(0)
+            self.depth.bind(1)
+            self.sampler.bind(1)
 
-        # Unbind textures.
-        GL.glActiveTexture(GL.GL_TEXTURE1)
-        GL.glBindTexture(GL.GL_TEXTURE_2D, 0)
-        GL.glActiveTexture(GL.GL_TEXTURE0)
-        GL.glBindTexture(GL.GL_TEXTURE_2D, 0)
+            self.lighting.use()
+            GL.glDrawArrays(GL.GL_TRIANGLE_STRIP, 0, 4)
+            self.lighting.unuse()
+
+            # Unbind textures.
+            self.color.unbind()
+            self.depth.unbind()
+
+        GL.glBindVertexArray(0)
 
         fps = int(1000 / self.avg_ms_per_frame)
         if fps != self.fps:
@@ -319,23 +379,11 @@ class Dorfromantik(Game3D):
         GL.glWindowPos2d(self.WIDTH - self.fps_surface.get_width(), self.HEIGHT - self.fps_surface.get_height())
         GL.glDrawPixels(self.fps_surface.get_width(), self.fps_surface.get_height(), GL.GL_RGBA, GL.GL_UNSIGNED_BYTE, self.fps_data)
 
-        import PIL.Image
-        import PIL.ImageOps
-
-        GL.glBindTexture(GL.GL_TEXTURE_2D, self.color)
-        result = GL.glGetTexImage(GL.GL_TEXTURE_2D, 0, GL.GL_RGB, GL.GL_UNSIGNED_BYTE)
-        img = PIL.Image.frombuffer("RGB", (self.WIDTH, self.HEIGHT), result, decoder_name="raw")
-        img = PIL.ImageOps.flip(img)
-        img.save("LOL.png", "png", quality=0, optimize=False)
-
-        GL.glBindTexture(GL.GL_TEXTURE_2D, self.depth)
-        result = GL.glGetTexImage(GL.GL_TEXTURE_2D, 0, GL.GL_RED, GL.GL_FLOAT)
-        print(result)
-        img = PIL.Image.frombuffer("F", (self.WIDTH, self.HEIGHT), result, decoder_name="raw")
-        img = PIL.ImageOps.flip(img)
-        img = img.convert('RGB')
-        img.save("ROFL.png", "png", quality=0, optimize=False)
-        exit()
+    def drop(self):
+        self.sampler.drop()
+        self.framebuffer.drop()
+        self.color.drop()
+        self.depth.drop()
 
 
 if __name__ == "__main__":

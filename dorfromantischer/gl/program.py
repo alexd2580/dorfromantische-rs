@@ -88,6 +88,11 @@ class Program:
             GL.glDeleteShader(vertex_shader)
         return False
 
+    def use(self):
+        GL.glUseProgram(self.program)
+
+    def unuse(self):
+        GL.glUseProgram(0)
 
     def destroy(self):
         if self.program is not None:

@@ -4,6 +4,7 @@ import sys
 
 import pygame
 from OpenGL import GL
+from typing import cast
 
 class Game3D:
     """Base 3D game class."""
@@ -19,10 +20,16 @@ class Game3D:
         """Initialize a window."""
         pygame.init()
 
+        # This breaks text?!
+        # pygame.display.gl_set_attribute(pygame.GL_CONTEXT_MAJOR_VERSION, 4)
+        # pygame.display.gl_set_attribute(pygame.GL_CONTEXT_MINOR_VERSION, 1)
+        # pygame.display.gl_set_attribute(pygame.GL_CONTEXT_PROFILE_MASK, pygame.GL_CONTEXT_PROFILE_CORE)
+
         self.window_size = self.WIDTH, self.HEIGHT
         self.screen = pygame.display.set_mode(self.window_size, pygame.DOUBLEBUF|pygame.OPENGL|pygame.HWSURFACE)
+
         GL.glViewport(0, 0, self.WIDTH, self.HEIGHT)
-        GL.glClearColor(0.2, 0, 0.2, 0)
+        GL.glClearColor(0.5, 0, 0.5, 0)
 
         GL.glEnable(GL.GL_BLEND)
         GL.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA)
@@ -41,6 +48,10 @@ class Game3D:
 
     def render(self):
         """Override this function to render global stuff in each game tick."""
+        pass
+
+    def drop(self):
+        """Override this function to delete/close resources when game terminates."""
         pass
 
     def current_time(self) -> float:
@@ -68,12 +79,14 @@ class Game3D:
 
             self.update()
 
-            GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
+            GL.glClear(cast(GL.GLenum, GL.GL_COLOR_BUFFER_BIT) | cast(GL.GLenum, GL.GL_DEPTH_BUFFER_BIT))
             self.render()
             pygame.display.flip()
 
             ms_per_frame = clock.tick(self._fps)
             self.avg_ms_per_frame = 0.95 * self.avg_ms_per_frame + 0.05 * ms_per_frame
+
+        self.drop()
 
 #
 #
