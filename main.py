@@ -9,7 +9,6 @@ from dorfromantischer.gl.buffer import Buffer, UniformBuffer, ShaderStorageBuffe
 import pygame
 import math
 from OpenGL import GL
-import OpenGL.raw.GL.VERSION.GL_3_3 as RawGL
 import numpy
 from scipy.spatial.transform import Rotation
 from typing import cast, Optional
@@ -113,26 +112,6 @@ class Sampler:
         GL.glDeleteSamplers([self.sampler])
 
 
-# class Timer:
-#     timer: GL.GLuint
-#
-#     def __init__(self):
-#         self.timer = GL.glGenQueries(1)[0];
-#
-#     def record(self):
-#         GL.glQueryCounter(self.timer, GL.GL_TIMESTAMP);
-#
-#     def get_timestamp(self):
-#         avail = False
-#         while not avail:
-#             avail = GL.glGetQueryObjectiv(self.timer, GL.GL_QUERY_RESULT_AVAILABLE)
-#             result = numpy.array([0], dtype=numpy.uint64)
-#             RawGL.glGetQueryObjectui64v(self.timer, GL.GL_QUERY_RESULT, result)
-#             print(result)
-#
-#     # printf("Time spent on the GPU: %f ms\n", (stopTime - startTime) / 1000000.0);
-
-
 class Dorfromantik(Game3D):
     state: State
 
@@ -160,8 +139,7 @@ class Dorfromantik(Game3D):
     fps_data: bytes
 
     framebuffer: Framebuffer
-    color: Texture
-    depth: Texture
+    data: Texture
     sampler: Sampler
 
     def __init__(self):
@@ -172,9 +150,8 @@ class Dorfromantik(Game3D):
         self.font = pygame.font.SysFont('arial', 16)
         self.fps = 0
 
-        self.color = Texture(self.WIDTH, self.HEIGHT, GL.GL_RGBA)
-        self.depth = Texture(self.WIDTH, self.HEIGHT, GL.GL_R32F, GL.GL_RED)
-        self.framebuffer = Framebuffer([self.color, self.depth])
+        self.data = Texture(self.WIDTH, self.HEIGHT, GL.GL_RGBA32F, GL.GL_RGBA)
+        self.framebuffer = Framebuffer([self.data])
         self.sampler = Sampler()
 
         self.vao = GL.glGenVertexArrays(1)
@@ -355,18 +332,15 @@ class Dorfromantik(Game3D):
         # Run lighting pass.
         if self.lighting.program:
             # Bind actual textures to texture units.
-            self.color.bind(0)
+            self.data.bind(0)
             self.sampler.bind(0)
-            self.depth.bind(1)
-            self.sampler.bind(1)
 
             self.lighting.use()
             GL.glDrawArrays(GL.GL_TRIANGLE_STRIP, 0, 4)
             self.lighting.unuse()
 
             # Unbind textures.
-            self.color.unbind()
-            self.depth.unbind()
+            self.data.unbind()
 
         GL.glBindVertexArray(0)
 
@@ -382,8 +356,7 @@ class Dorfromantik(Game3D):
     def drop(self):
         self.sampler.drop()
         self.framebuffer.drop()
-        self.color.drop()
-        self.depth.drop()
+        self.data.drop()
 
 
 if __name__ == "__main__":

@@ -2,8 +2,7 @@
 
 in vec2 uv;
 
-layout(location=0) out vec4 frag_color;
-layout(location=1) out vec4 frag_depth;
+layout(location=0) out vec4 frag_data;
 
 layout (std140) uniform globals_buffer {
     float time;
@@ -76,7 +75,7 @@ const vec3 tile_d = vec3(2 * cos_30, 0, 1.5);
 const vec2 no_intersection = vec2(inf, 0);
 
 const int ray_march_steps = 50;
-const float ray_march_eps = 0.0001;
+const float ray_march_eps = 0.00001;
 
 #define RUNOFF 0
 #define TOO_MANY_STEPS 1
@@ -90,6 +89,7 @@ const float ray_march_eps = 0.0001;
 #define FLOOR 14 // res.color = vec3(0.2);
 
 float rand(vec2 seed) {
+    // return seed.x;
     return fract(sin(dot(seed, vec2(12.9898, 78.233))) * 43758.5453);
 }
 
@@ -235,10 +235,17 @@ vec2 sdf_town(vec3 pos) {
 }
 
 vec2 sdf_tree(vec3 pos, vec3 index) {
-    float scale = 0.5 + 0.5 * rand(vec2(index.xz));
+    float scale = 0.5 + 0.5 * rand(index.xz);
 
+    float a = (1.0, 2.0);
     pos /= scale;
-    pos += 0.7 * (vec3(rand(vec2(index.xz)), 0, rand(vec2(index.xz) + 1)) - 0.5);
+    pos += 0.9 * vec3(rand(index.xz) - 0.5, 0, rand(index.xz + 1) - 0.5);
+
+    // 1 cycle per 5 seconds.
+    float tree_time = 0.2 * time / (2*pi) * (rand(index.xz) / 2 + 0.75);
+    float sway_time = 5 * tree_time * (rand(index.xz) / 2 + 0.75);
+    // pos *= 1 + 0.2 * vec3(sin(tree_time), 0, cos(sway_time));
+    pos = rotate_x(rotate_z(pos, 0.2 * cos(tree_time)), 0.2 * cos(sway_time));
 
     vec2 trunk_cyl = sdf_cylinder_y(pos, 0.15);
     vec2 trunk_min = sdf_plane(pos, vec3(0, -1, 0), 0);
@@ -379,7 +386,7 @@ float shadow_march(Ray ray, float mint, float maxt, float w, ivec2 st, Tile tile
     float res = 1.0;
     float previous_distance = epsilon;
     float total_distance = mint;
-    for(int i=0; i < 50 && total_distance < maxt; i++) {
+    for(int i=0; i < ray_march_steps && total_distance < maxt; i++) {
         vec3 global_pos = ray.origin + ray.dir * total_distance;
         vec3 relative_origin = at(global_pos, tile_center);
         float distance = sdf_tile(global_pos, relative_origin, tile).x;
@@ -412,7 +419,7 @@ vec2 intersect_tile(Ray ray, ivec2 st, Tile tile) {
         total_distance += tile_distance.x;
         ray.origin += tile_distance.x * ray.dir;
     }
-    return vec2(inf, TOO_MANY_STEPS);
+    return vec2(total_distance, TOO_MANY_STEPS);
 }
 
 // // Rotation is CCW, but the DR rotation is CW.
@@ -471,7 +478,7 @@ vec4 intersect_scene(Ray ray) {
     ivec2 next_st;
 
     ivec2 closest_st = st;
-    vec2 closest = vec2(inf, RUNOFF);
+    vec2 closest = vec2(inf, SKYBOX);
 
     vec2 local;
     for (int i=2; i>=0; i--) {
@@ -512,14 +519,13 @@ void main(){
     float material = intersection.y;
     ivec2 st = ivec2(intersection.z, intersection.w);
 
-    vec3 light_dir = vec3(0.577);
+    // 2 revolutions per minute.
+    float light_time = 0.026 * time / (2*pi);
+    vec3 light_dir = normalize(vec3(cos(light_time), 1, sin(light_time)));
     Ray light_ray = Ray(ray_origin + distance * ray_dir, light_dir, 1 / light_dir);
 
     Tile tile = get_tile(st);
     float shadow = shadow_march(light_ray, 0.01, 1000, 0.02, st, tile);
 
-    frag_depth = vec4(distance / 500, 0, 0, 1);
-    frag_color = vec4((st % 3) / 3.0, 0, 1);
-    frag_color = vec4(vec3(shadow), 1);
-
+    frag_data = vec4(distance / 500.0, shadow, material / 100.0, 1.0);
 }
