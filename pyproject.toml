@@ -1,5 +1,0 @@
-[tool.pyright]
-exclude = [ "venv" ]
-venvPath = "."
-venv = "venv"
-defineConstant = { DEBUG = true }
