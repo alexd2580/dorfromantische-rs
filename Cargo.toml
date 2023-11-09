@@ -1,0 +1,13 @@
+[package]
+name = "dorfromantische-rs"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+nrbf-rs = { path = "../nrbf-rs", version = "0.1.0" }
+compute-shade-rs = { path = "../compute-shade-rs", version = "0.1.0" }
+simple_logger = "4.2.0"
+log = "0.4.20"
+glam = "0.24.2"
