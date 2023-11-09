@@ -302,7 +302,7 @@ class Dorfromantik(Game3D):
             factor = 10 if pressed[pygame.K_LSHIFT] else (0.1 if pressed[pygame.K_LCTRL] else 1)
 
             self.origin += factor * movement
-            self.origin[1] = max(0.5, self.origin[1])
+            self.origin[1] = max(1.0, self.origin[1])
 
     def render(self):
         if self.shader.was_source_modified_since():

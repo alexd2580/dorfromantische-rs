@@ -20,7 +20,7 @@ class Terrain(Enum):
 
 
 class Form(Enum):
-    """Clockwise!"""
+    """Clockwise! Also, we remap the IDs for better space usage on the GPU."""
 
     size1 = 1
     size2 = 2
@@ -36,15 +36,49 @@ class Form(Enum):
     size5 = 12
     size6 = 13
 
-    unknown_102 = 102
-    unknown_105 = 105
-    water_size4 = 109 # wtf?
-    unknown_111 = 111
+    unknown_102 = 14
+    unknown_105 = 15
+    water_size4 = 16 # wtf?
+    unknown_111 = 17
 
     @staticmethod
     def from_dump(data):
         assert data["__class"] == "Dorfromantik.SegmentTypeId"
-        return Form(data["value__"])
+        match data["value__"]:
+            case 1:
+                return Form.size1
+            case 2:
+                return Form.size2
+            case 3:
+                return Form.bridge
+            case 4:
+                return Form.straight
+            case 5:
+                return Form.size3
+            case 6:
+                return Form.junction_left
+            case 7:
+                return Form.junction_right
+            case 8:
+                return Form.three_way
+            case 9:
+                return Form.size4
+            case 10:
+                return Form.fan_out
+            case 11:
+                return Form.x
+            case 12:
+                return Form.size5
+            case 13:
+                return Form.size6
+            case 102:
+                return Form.unknown_102
+            case 105:
+                return Form.unknown_105
+            case 109:
+                return Form.water_size4
+            case 111:
+                return Form.unknown_111
 
 
 form_mapping = {

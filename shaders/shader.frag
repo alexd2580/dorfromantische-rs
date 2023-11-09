@@ -42,6 +42,25 @@ struct Tile {
 #define RAIL_SEGMENT 3
 #define WATER_SEGMENT 4
 
+#define FORM_SIZE1 = 1
+#define FORM_SIZE2 = 2
+#define FORM_BRIDGE = 3 // 1-skip1-1
+#define FORM_STRAIGHT = 4 // 1-skip2-1
+#define FORM_SIZE3 = 5
+#define FORM_JUNCTION_LEFT = 6 // 2-skip1-1
+#define FORM_JUNCTION_RIGHt = 7 // 2-skip2-1
+#define FORM_THREE_WAY = 8 // 1-skip1-1-skip1-1
+#define FORM_SIZE4 = 9
+#define FORM_FAN_OUT = 10 // 3-skip1-1
+#define FORM_X = 11 // 2-skip1-2
+#define FORM_SIZE5 = 12
+#define FORM_SIZE6 = 13
+#define FORM_
+#define FORM_UNKNOWN_102 = 14
+#define FORM_UNKNOWN_105 = 15
+#define FORM_WATER_SIZE4 = 16
+#define FORM_UNKNOWN_111 = 17
+
 layout(std430) buffer quadrant0_buffer {
     Tile quadrant0[];
 };
@@ -74,19 +93,21 @@ const float sin_30 = 0.5;
 const vec3 tile_d = vec3(2 * cos_30, 0, 1.5);
 const vec2 no_intersection = vec2(inf, 0);
 
-const int ray_march_steps = 50;
+const int ray_march_steps = 40;
 const float ray_march_eps = 0.00001;
 
 #define RUNOFF 0
 #define TOO_MANY_STEPS 1
 #define UNDEFINED 2
-#define SKYBOX 3 // vec3(0.7, 0.7, 1.0)
+#define SKYBOX 3
 
-#define TRUNK 10 //trunk.color = vec3(0.42, 0.35, 0.25);
-#define TREETOP 11 //treetop.color = vec3(0.30, 0.34, 0.17);
-#define HOUSE_BASE 12 // base.color = vec3(0.89, 0.75, 0.47);
-#define HOUSE_ROOF 13 // roof.color = vec3(0.96, 0.26, 0.26);
-#define FLOOR 14 // res.color = vec3(0.2);
+#define TRUNK 10
+#define TREETOP 11
+#define HOUSE_BASE 12
+#define HOUSE_ROOF 13
+#define FLOOR 14
+#define WHEAT 15
+#define WATER 16
 
 float rand(vec2 seed) {
     // return seed.x;
@@ -216,28 +237,33 @@ vec2 sdf_roof(vec3 pos) {
     return sdf_intersect(sdf_intersect(fb, lr), bottom) * vec2(1, HOUSE_ROOF);
 }
 
-vec2 sdf_house(vec3 pos) {
-    vec2 base = sdf_box(at(pos, vec3(0, 1, 0)), vec3(2));
+vec2 sdf_house(vec3 pos, vec3 index) {
+    float scale = 0.03 + 0.04 * rand(index.xz);
+    pos = at(pos, 0.12 * vec3(rand(index.xz), 0, rand(index.zx)) - vec3(0.06, 0, 0.06)) / scale;
+
+    float r = rand(index.xz + 1);
+    pos = rotate_y(pos, r * 2 * pi);
+
+    vec2 base = sdf_box(at(pos, vec3(0, 0.75, 0)), vec3(2, 1.5, 2));
     base.y = HOUSE_BASE;
-    vec2 roof = sdf_roof(at(pos, vec3(0, 2, 0)));
+    vec2 roof = sdf_roof(at(pos, vec3(0, 1.5, 0)));
     roof.y = HOUSE_ROOF;
-    return sdf_union(base, roof);
+    return sdf_union(base, roof) * vec2(scale, 1);
 }
 
 vec2 sdf_town(vec3 pos) {
     // vec3 house_offset = vec3(0.5 * cos_30, 0, 0);
     // vec3 repeated_pos = repeated_xz(at(pos, house_offset) / scale, 5);
 
-    float scale = 0.1;
-    vec3 repeated_pos = repeated_xz(pos / scale, 5);
-    vec2 house = sdf_house(repeated_pos);
-    return house * vec2(scale, 1);
+    // Offset to triangle center.
+    repeated_xz_variate(pos, index, vec3(0.2, 0, 0.2), sdf_house, house)
+
+    return house;
 }
 
 vec2 sdf_tree(vec3 pos, vec3 index) {
     float scale = 0.5 + 0.5 * rand(index.xz);
 
-    float a = (1.0, 2.0);
     pos /= scale;
     pos += 0.9 * vec3(rand(index.xz) - 0.5, 0, rand(index.xz + 1) - 0.5);
 
@@ -268,13 +294,22 @@ vec2 sdf_forest(vec3 pos) {
     return tree * vec2(scale, 1);
 }
 
-// SdfHit sdf_wheat_tile(vec3 pos) {
-//     float scale = 0.8;
-//     SdfHit wheat = sdf_tile_bounds(at(pos, vec3(0.1 * cos_30, 0.1, 0)) / scale);
-//     wheat.color = vec3(0.89, 0.71, 0.5);
-//     wheat.distance *= scale;
-//     return wheat;
-// }
+vec2 sdf_wheat(vec3 pos, vec3 index) {
+    pos += 0.02 * vec3(rand(index.xz) - 0.5, 0, rand(index.xz + 1) - 0.5);
+
+    // 1 cycle per second.
+    float tree_time = time / (2*pi) * (rand(index.xz) / 2 + 0.75);
+    float sway_time = 5 * tree_time * (rand(index.xz) / 2 + 0.75);
+    pos = rotate_x(rotate_z(pos, 0.2 * cos(tree_time)), 0.2 * cos(sway_time));
+
+    return sdf_cylinder_y(pos, 0.003);
+}
+
+vec2 sdf_wheat_field(vec3 pos) {
+    float scale = 3;
+    repeated_xz_variate(pos / scale, index, vec3(0.01, 0, 0.01), sdf_wheat, wheat)
+    return sdf_intersect(wheat * vec2(1, WHEAT), sdf_plane(pos, vec3(0, 1, 0), 0.07)) * (scale, 1);
+}
 
 // SdfHit sdf_rail_tile(vec3 origin) {
 //     // Do everything in scaled coordinates.
@@ -310,13 +345,9 @@ vec2 sdf_forest(vec3 pos) {
 //     return bounded_rail;
 // }
 
-// SdfHit sdf_water_tile(vec3 origin) {
-//     // TODO
-//     SdfHit tile_floor = sdf_tile_bounds(origin);
-//     tile_floor.color = vec3(0, 0, 0.6);
-//
-//     return tile_floor;
-// }
+vec2 sdf_water(vec3 pos) {
+    return sdf_plane(pos, vec3(0, 1, 0), 0.01) * vec2(1, WATER);
+}
 
 // SdfHit sdf_bahnhof_tile(vec3 pos) {
 //     SdfHit building = sdf_sphere(pos, 1);
@@ -353,15 +384,42 @@ Tile get_tile(ivec2 st) {
     return Tile(false, 0, int[18](0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0), int[4](0, 0, 0, 0));
 }
 
+vec2 sdf_segment_border(vec3 pos, int form, int rotation) {
+    switch(form) {
+        case FORM_SIZE1:
+            return sdf_sphere(at(pos, ), );
+        case FORM_SIZE2 = 2
+        case FORM_BRIDGE = 3 // 1-skip1-1
+        case FORM_STRAIGHT = 4 // 1-skip2-1
+        case FORM_SIZE3 = 5
+        case FORM_JUNCTION_LEFT = 6 // 2-skip1-1
+        case FORM_JUNCTION_RIGHt = 7 // 2-skip2-1
+        case FORM_THREE_WAY = 8 // 1-skip1-1-skip1-1
+        case FORM_SIZE4 = 9
+        case FORM_FAN_OUT = 10 // 3-skip1-1
+        case FORM_X = 11 // 2-skip1-2
+        case FORM_SIZE5 = 12
+        case FORM_SIZE6 = 13
+        case FORM_
+        case FORM_UNKNOWN_102 = 14
+        case FORM_UNKNOWN_105 = 15
+        case FORM_WATER_SIZE4 = 16
+        case FORM_UNKNOWN_111 = 17
+    }
+    return vec2(0, 0);
+}
+
 vec2 sdf_segment(vec3 global_pos, vec3 pos, int form, int terrain, int rotation) {
     switch(terrain) {
     case HOUSE_SEGMENT:
-        return sdf_town(global_pos);
+        return sdf_intersect(sdf_town(global_pos), sdf_segment_border(pos, form, rotation));
     case FOREST_SEGMENT:
-        return sdf_forest(global_pos);
+        return sdf_intersect(sdf_forest(global_pos), sdf_segment_border(pos, form, rotation));
     case WHEAT_SEGMENT:
+        return sdf_intersect(sdf_wheat_field(global_pos), sdf_segment_border(pos, form, rotation));
     case RAIL_SEGMENT:
     case WATER_SEGMENT:
+        return sdf_intersect(sdf_water(global_pos), sdf_segment_border(pos, form, rotation));
     case EMPTY_SEGMENT:
     default:
         return vec2(inf, UNDEFINED);
@@ -402,24 +460,32 @@ float shadow_march(Ray ray, float mint, float maxt, float w, ivec2 st, Tile tile
     return res;
 }
 
-vec2 intersect_tile(Ray ray, ivec2 st, Tile tile) {
+/**
+ * Use raymarching to intersect tile `tile` at coords `st`. The return vector
+ * contains the last sdf value (proximity to any object) in the X coordinate,
+ * then the total marched distance in Y, and the reported material in the Z
+ * coordinate.
+ */
+vec3 intersect_tile(Ray ray, ivec2 st, Tile tile) {
     vec3 tile_center = syt_to_xyz(st.s, 0, st.t);
+    vec3 relative_origin;
+    vec2 tile_distance;
     float total_distance = 0.0;
     for (int i = 0; i < ray_march_steps; i++) {
         // Compute distance to scene.
-        vec3 relative_origin = at(ray.origin, tile_center);
-        vec2 tile_distance = sdf_tile(ray.origin, relative_origin, tile);
+        relative_origin = at(ray.origin, tile_center);
+        tile_distance = sdf_tile(ray.origin, relative_origin, tile);
 
         // If we're now very close to scene.
         if (tile_distance.x < ray_march_eps) {
-            return vec2(total_distance, tile_distance.y);
+            return vec3(tile_distance.x, total_distance, tile_distance.y);
         }
 
         // Advance ray.
         total_distance += tile_distance.x;
         ray.origin += tile_distance.x * ray.dir;
     }
-    return vec2(total_distance, TOO_MANY_STEPS);
+    return vec3(tile_distance.x, total_distance, tile_distance.y);
 }
 
 // // Rotation is CCW, but the DR rotation is CW.
@@ -480,23 +546,25 @@ vec4 intersect_scene(Ray ray) {
     ivec2 closest_st = st;
     vec2 closest = vec2(inf, SKYBOX);
 
-    vec2 local;
+    float dist_floor;
+    vec3 floor;
+    vec3 local;
     for (int i=2; i>=0; i--) {
-        float dist_floor = distance_to_y(ray, i * 0.2);
+        dist_floor = distance_to_y(ray, i * 0.2);
         if (dist_floor < 0 || dist_floor > 10000) {
             // Looking at sky.
             return vec4(inf, SKYBOX, inf, inf);
         }
-        vec3 floor = ray.origin + dist_floor * ray.dir;
+        floor = ray.origin + dist_floor * ray.dir;
         next_st = grid_coords_at(floor);
         if (next_st != st) {
             st = next_st;
             Tile t = get_tile(st);
             if (t.present) {
                 local = intersect_tile(ray, st, t);
-                if (local.x < closest.x) {
+                if (local.y < closest.x && local.x < 1.0) {
                     closest_st = st;
-                    closest = local;
+                    closest = local.yz;
                 }
             }
         }

@@ -36,6 +36,8 @@ const float epsilon = 0.00001;
 #define HOUSE_BASE 12
 #define HOUSE_ROOF 13
 #define FLOOR 14
+#define WHEAT 15
+#define WATER 16
 
 vec3 material_color_of(int material) {
     switch(material) {
@@ -57,6 +59,10 @@ vec3 material_color_of(int material) {
         return vec3(0.96, 0.26, 0.26);
     case FLOOR:
         return vec3(0.2);
+    case WHEAT:
+        return vec3(0.8, 0.6, 0.2);
+    case WATER:
+        return vec3(0, 0, 0.6);
     }
 }
 
@@ -74,7 +80,7 @@ void main(){
 
     vec4 pixel_data = texture(data, 0.5 * uv_a + 0.5);
     float distance_a = pixel_data.x * 500.0;
-    vec3 material_color = material_color_of(int(pixel_data.z * 100.0));
+    vec3 material_color = material_color_of(int(round(pixel_data.z * 100.0)));
 
     if (distance_a > 100000) {
         frag_color = vec4(material_color, 1);
